@@ -1,0 +1,11 @@
+# Force LF line endings on files that ship inside the Linux container
+# regardless of the contributor's platform. Without this, Windows clones
+# would mangle the bash script and the docker build would fail at runtime.
+
+*.sh         text eol=lf
+Dockerfile   text eol=lf
+*.yml        text eol=lf
+*.yaml       text eol=lf
+
+# Default text auto-detection (LF in repo, native checkout)
+* text=auto

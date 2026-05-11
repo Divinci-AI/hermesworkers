@@ -1,0 +1,51 @@
+# hermesworkers — Cloudflare Workers configuration template.
+#
+# Replace the placeholders below before your first `wrangler deploy`:
+#   - <YOUR_WORKER_NAME>             unique Worker name in your account
+#   - <YOUR_ACCOUNT_ID>              from `wrangler whoami` or the Cloudflare dashboard
+#
+# Optional placeholders for the custom-domain mode (see docs/custom-domain.md):
+#   - <YOUR_DASHBOARD_HOSTNAME>      e.g. hermes.example.com (Worker Route)
+
+name = "<YOUR_WORKER_NAME>"
+main = "src/index.ts"
+compatibility_date = "2026-05-01"
+compatibility_flags = ["nodejs_compat"]
+account_id = "<YOUR_ACCOUNT_ID>"
+
+# Allow the Worker to receive WebSocket upgrades (Hermes dashboard live updates).
+[observability]
+enabled = true
+
+# ─── Durable Object that owns the Hermes container ──────────────────
+[[durable_objects.bindings]]
+name = "HERMES"
+class_name = "HermesInstance"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["HermesInstance"]
+
+# ─── Cloudflare Sandbox container image (built from container/Dockerfile) ──
+[[containers]]
+class_name = "HermesInstance"
+image = "./container/Dockerfile"
+max_instances = 1
+instance_type = "standard-1"
+
+# ─── Optional: Worker Route for the dashboard subdomain ─────────────
+# Uncomment and edit if you wire a custom domain (see docs/custom-domain.md).
+# routes = [
+#   { pattern = "<YOUR_DASHBOARD_HOSTNAME>/*", custom_domain = true }
+# ]
+
+# ─── Required secrets (set with `wrangler secret put <NAME>`) ──────
+# At least one of the three provider keys is required:
+#   ANTHROPIC_API_KEY    Anthropic Claude access
+#   OPENROUTER_API_KEY   OpenRouter (multi-provider routing)
+#   OPENAI_API_KEY       OpenAI (GPT models)
+#
+# Optional:
+#   API_TOKEN            Bearer token required on /api/* requests (recommended in production).
+#                        Generate one with: `openssl rand -hex 32`
+#   HERMES_DEFAULT_MODEL Override Hermes' default model id, e.g. `anthropic/claude-sonnet-4-5`

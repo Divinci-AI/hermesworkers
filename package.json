@@ -1,0 +1,23 @@
+{
+  "name": "hermesworkers",
+  "version": "0.1.0",
+  "description": "Run the Hermes personal AI assistant inside a Cloudflare Sandbox container.",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@cloudflare/sandbox": "^0.7.20",
+    "hono": "^4.6.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250503.0",
+    "typescript": "^5.6.0",
+    "wrangler": "^3.95.0"
+  }
+}

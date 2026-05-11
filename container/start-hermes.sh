@@ -1,0 +1,70 @@
+#!/bin/bash
+# Hermes container startup script.
+#
+# Launches:
+#   1. The Hermes API server (OpenAI-compatible /v1/chat/completions) on port 18789.
+#   2. The Hermes native dashboard (web UI + WebSocket) on port 9119, in background.
+#
+# Provider API keys (Anthropic, OpenRouter, OpenAI) are injected through environment
+# variables by the Worker at process start. Hermes reads them from ~/.hermes/.env,
+# so we materialize that file from the environment on every boot.
+
+set -e
+
+LOG_FILE=/tmp/hermes-server.log
+DASHBOARD_LOG=/tmp/hermes-dashboard.log
+
+echo "=== hermesworkers container startup ===" >&2
+echo "ANTHROPIC_API_KEY set: ${ANTHROPIC_API_KEY:+yes}" >&2
+echo "OPENROUTER_API_KEY set: ${OPENROUTER_API_KEY:+yes}" >&2
+echo "OPENAI_API_KEY set: ${OPENAI_API_KEY:+yes}" >&2
+echo "HERMES_GATEWAY_TOKEN set: ${HERMES_GATEWAY_TOKEN:+yes}" >&2
+echo "HOME: ${HOME:-/home/hermes}" >&2
+
+# Guard: do not start a duplicate gateway if the script is re-invoked while one is alive.
+if pgrep -f "hermes gateway" > /dev/null 2>&1; then
+    echo "Hermes gateway already running, exiting." >&2
+    exit 0
+fi
+
+HOME_DIR="${HOME:-/home/hermes}"
+mkdir -p "$HOME_DIR/.hermes"
+
+# Configure the Hermes API server before launching the gateway.
+# We bind to 18789 (not Hermes' default 8642) so the Worker has a stable target port.
+hermes config set API_SERVER_ENABLED true
+hermes config set API_SERVER_KEY "${HERMES_GATEWAY_TOKEN:-change-me-local-dev}"
+hermes config set API_SERVER_PORT 18789
+
+# Hermes reads provider keys + feature flags from ~/.hermes/.env, NOT system env vars.
+# Rebuild the file from scratch on each boot so the latest secrets are picked up.
+# `|| true` guards against `set -e` aborting when an optional key is unset.
+HERMES_ENV_FILE="$HOME_DIR/.hermes/.env"
+: > "$HERMES_ENV_FILE"
+echo "GATEWAY_ALLOW_ALL_USERS=true" >> "$HERMES_ENV_FILE"
+{ [ -n "$ANTHROPIC_API_KEY" ] && echo "ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY" >> "$HERMES_ENV_FILE"; } || true
+{ [ -n "$OPENROUTER_API_KEY" ] && echo "OPENROUTER_API_KEY=$OPENROUTER_API_KEY" >> "$HERMES_ENV_FILE"; } || true
+{ [ -n "$OPENAI_API_KEY" ] && echo "OPENAI_API_KEY=$OPENAI_API_KEY" >> "$HERMES_ENV_FILE"; } || true
+chmod 600 "$HERMES_ENV_FILE"
+echo "[startup] wrote $HERMES_ENV_FILE ($(wc -l < "$HERMES_ENV_FILE") lines)" >> "$LOG_FILE"
+
+# Bind to all interfaces. Cloudflare Sandbox `containerFetch` reaches the container via 10.0.0.1
+# (external IP), not loopback. Hermes defaults to 127.0.0.1 which is unreachable from the Worker.
+hermes config set API_SERVER_HOST 0.0.0.0 || hermes config set API_SERVER_BIND 0.0.0.0 || true
+
+# Pin a default model so the API server can route requests when the caller does not specify one,
+# or when the supplied model is not pre-registered with Hermes. Override with HERMES_DEFAULT_MODEL.
+hermes config set model "${HERMES_DEFAULT_MODEL:-anthropic/claude-sonnet-4-5}" || true
+
+# Launch the native Hermes dashboard (web UI on port 9119) in the background.
+# `--insecure` is required because Hermes refuses to bind 0.0.0.0 by default. This is safe in our
+# topology: the container is unreachable from the public internet except through the Worker proxy,
+# which is the only gate. See docs/architecture.md for details.
+echo "=== $(date -u) launching hermes dashboard on 0.0.0.0:9119 ===" > "$DASHBOARD_LOG"
+hermes dashboard --host 0.0.0.0 --port 9119 --insecure >> "$DASHBOARD_LOG" 2>&1 &
+DASHBOARD_PID=$!
+echo "Dashboard launched (pid=$DASHBOARD_PID)" >&2
+
+# Launch the gateway in the foreground. Its stdout/stderr are tee'd to a log file the Worker can read.
+echo "=== $(date -u) launching hermes gateway ===" >> "$LOG_FILE"
+exec hermes gateway >> "$LOG_FILE" 2>&1

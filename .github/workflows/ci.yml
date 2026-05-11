@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  typecheck:
+    name: Type check Worker
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run typecheck
+
+  docker:
+    name: Build container image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Build Hermes Sandbox image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./container
+          file: ./container/Dockerfile
+          push: false
+          load: true
+          tags: hermesworkers:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Smoke check
+        run: |
+          docker run --rm hermesworkers:ci /usr/local/bin/hermes --version
+          docker run --rm hermesworkers:ci /usr/local/bin/hermes dashboard --help > /dev/null
