@@ -2,6 +2,8 @@ import { Hono } from 'hono';
 import {
   getContainer,
   collectProviderKeys,
+  requireGatewayToken,
+  GatewayTokenMissingError,
   type Env,
 } from '../lib/container';
 import {
@@ -22,10 +24,20 @@ const chat = new Hono<{ Bindings: Env }>();
 chat.post('/v1/chat/completions', async (c) => {
   const container = getContainer(c.env);
 
+  let gatewayToken: string;
+  try {
+    gatewayToken = requireGatewayToken(c.env);
+  } catch (err) {
+    if (err instanceof GatewayTokenMissingError) {
+      return c.json({ error: 'server_misconfigured', message: err.message }, 503);
+    }
+    throw err;
+  }
+
   try {
     await ensureGateway(container, {
       providerKeys: collectProviderKeys(c.env),
-      gatewayToken: c.env.HERMES_GATEWAY_TOKEN,
+      gatewayToken,
       defaultModel: c.env.HERMES_DEFAULT_MODEL,
     });
   } catch (err) {
@@ -45,7 +57,7 @@ chat.post('/v1/chat/completions', async (c) => {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${c.env.HERMES_GATEWAY_TOKEN ?? ''}`,
+        Authorization: `Bearer ${gatewayToken}`,
       },
       body,
     },

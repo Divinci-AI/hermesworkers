@@ -2,8 +2,11 @@ import { Hono } from 'hono';
 import {
   getContainer,
   collectProviderKeys,
+  requireGatewayToken,
+  GatewayTokenMissingError,
   type Env,
 } from '../lib/container';
+import { authMiddleware, rateLimitMiddleware } from '../lib/auth';
 import {
   ensureGateway,
   getGatewayStatus,
@@ -12,6 +15,15 @@ import {
 } from '../services/container-lifecycle';
 
 const instance = new Hono<{ Bindings: Env }>();
+
+// Destructive / introspective control routes require the admin privilege level
+// on top of the baseline chat gate applied in index.ts. A chat-token holder can
+// wake and chat, but cannot restart, stop, or read logs. Admin routes are also
+// rate-limited on their own (tighter) bucket.
+const adminOnly = ['/api/instance/restart', '/api/instance/restart-gateway', '/api/instance/stop', '/api/instance/logs'];
+for (const path of adminOnly) {
+  instance.use(path, rateLimitMiddleware('admin'), authMiddleware('admin'));
+}
 
 /**
  * Liveness probe — confirms the Worker is up and reports whether the
@@ -37,7 +49,7 @@ instance.post('/api/instance/wake', async (c) => {
   try {
     await ensureGateway(container, {
       providerKeys: collectProviderKeys(c.env),
-      gatewayToken: c.env.HERMES_GATEWAY_TOKEN,
+      gatewayToken: requireGatewayToken(c.env),
       defaultModel: c.env.HERMES_DEFAULT_MODEL,
     });
     return c.json({ ok: true, status: 'ready' });
@@ -45,7 +57,8 @@ instance.post('/api/instance/wake', async (c) => {
     return c.json(
       {
         ok: false,
-        error: err instanceof Error ? err.message : String(err),
+        error: err instanceof GatewayTokenMissingError ? 'server_misconfigured' : 'container_not_ready',
+        message: err instanceof Error ? err.message : String(err),
       },
       503,
     );
@@ -79,7 +92,7 @@ instance.post('/api/instance/restart-gateway', async (c) => {
   try {
     await restartGateway(container, {
       providerKeys: collectProviderKeys(c.env),
-      gatewayToken: c.env.HERMES_GATEWAY_TOKEN,
+      gatewayToken: requireGatewayToken(c.env),
       defaultModel: c.env.HERMES_DEFAULT_MODEL,
     });
     return c.json({ ok: true, status: 'ready' });
@@ -114,9 +127,14 @@ instance.get('/api/instance/logs', async (c) => {
     'echo "=== HERMES STATUS ==="',
     'hermes status 2>&1 | head -60 || true',
     'echo "=== HERMES CONFIG ==="',
-    'hermes config show 2>&1 | head -80 || true',
-    'echo "=== ~/.hermes/.env ==="',
-    'cat ~/.hermes/.env 2>/dev/null | sed "s/\\(.*=\\).\\{6,\\}/\\1<redacted>/" || true',
+    // Redact anything that looks like a key/token/secret/password before it
+    // reaches the response (Hermes prints API_SERVER_KEY here otherwise).
+    'hermes config show 2>&1 | sed -E "s/((KEY|TOKEN|SECRET|PASSWORD)[^=:]*[=:][[:space:]]*).*/\\1<redacted>/I" | head -80 || true',
+    // Env keys only — never their values. Prints the variable NAMES present in
+    // ~/.hermes/.env so an operator can confirm which secrets are wired, with
+    // zero risk of leaking a short (<6 char) value the old redaction missed.
+    'echo "=== ~/.hermes/.env (keys present, values withheld) ==="',
+    'grep -oE "^[A-Za-z_][A-Za-z0-9_]*" ~/.hermes/.env 2>/dev/null || echo "(no .env yet)"',
     'echo "=== SERVER LOG (tail 80) ==="',
     'tail -80 /tmp/hermes-server.log 2>/dev/null || echo "(no log yet)"',
     'echo "=== DASHBOARD LOG (tail 40) ==="',

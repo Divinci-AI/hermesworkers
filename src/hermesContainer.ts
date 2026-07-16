@@ -19,7 +19,9 @@ export class HermesInstance extends Sandbox {
   sleepAfter = '4h';
 
   constructor(ctx: DurableObjectState, env: unknown) {
-    super(ctx, env as any);
+    // The Sandbox base constructor is typed for a concrete state shape; this DO
+    // holds no typed state (all state lives in the container), so cast through.
+    super(ctx as DurableObjectState<Record<string, unknown>>, env as any);
     // No baseline env required here — keys are injected at process start.
   }
 }

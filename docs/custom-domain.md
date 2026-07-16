@@ -58,13 +58,20 @@ curl -I https://hermes.example.com/ \
 
 You should get back the Hermes dashboard HTML (HTTP 200, `content-type: text/html`). Visiting the URL in a browser shows the dashboard with the sidebar (Sessions, Analytics, Models, Cron, Skills, etc.).
 
-If `API_TOKEN` is set, the dashboard hostname requires the same token. You can either:
+The dashboard hostname is gated at the **chat** privilege level, fail-closed:
+it requires `API_TOKEN` (or `ADMIN_TOKEN`), and returns `503` if neither is
+configured — unless you set `ALLOW_UNAUTHENTICATED=true` for local dev. Supply
+the token one of two ways:
 
-- pass it as a `Authorization: Bearer <token>` header (works for curl / API clients), or
+- pass it as an `Authorization: Bearer <token>` header (works for curl / API clients), or
 - set a `hw_token` cookie (works for browser tabs):
   ```bash
   document.cookie = `hw_token=${encodeURIComponent('<your token>')}; path=/; secure; samesite=strict`;
   ```
+
+The Worker strips this credential (the `Authorization` header and the `hw_token`
+cookie) before forwarding to the container, so the Hermes process never sees the
+Worker's own auth token.
 
 ## Common issues
 
@@ -75,7 +82,13 @@ Cloudflare's free Universal SSL covers `example.com` and one wildcard level `*.e
 Make sure `custom_domain = true` is set in the route — the standard Worker Route pattern requires the certificate to be managed elsewhere. Custom Domains use Cloudflare-managed SSL automatically.
 
 **Dashboard shows the Hermes "Connect" form instead of loading directly.**
-The Hermes dashboard requires a gateway token over WebSocket. `hermesworkers` auto-injects it when the request comes in over the configured `DASHBOARD_HOSTNAME` — if you reach the dashboard via a different URL (e.g. the raw `*.workers.dev` URL), the injection won't fire and the form will appear.
+The Hermes dashboard has its own gateway-token prompt, separate from the
+Worker's `API_TOKEN`/`ADMIN_TOKEN` gate. `hermesworkers` authenticates the
+*edge* (it will not proxy to the dashboard without a valid chat token) but does
+**not** inject the Hermes gateway token into the dashboard session — enter your
+`HERMES_GATEWAY_TOKEN` in the Connect form once and the dashboard remembers it
+for the session. (Auto-injecting the dashboard session token is tracked as a
+future enhancement; it is deliberately not faked here.)
 
 **WebSocket fails to connect (1006 disconnected).**
 Confirm the hostname is registered as a Worker Custom Domain (not a regular Worker Route). Custom Domains preserve WebSocket upgrades by default; some Worker Route configurations don't.

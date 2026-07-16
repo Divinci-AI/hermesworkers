@@ -1,15 +1,23 @@
 import type { HermesInstance } from '../hermesContainer';
+import type { RateLimit } from './auth';
 
 /**
  * Bindings exposed to the Worker via wrangler.toml.
  *
- * Required secrets:
+ * Required secrets (production):
  *   - One of ANTHROPIC_API_KEY / OPENROUTER_API_KEY / OPENAI_API_KEY
- * Optional secrets:
- *   - API_TOKEN              bearer token required on /api/* if set
- *   - HERMES_GATEWAY_TOKEN   bearer token between Worker and Hermes API server
+ *   - HERMES_GATEWAY_TOKEN   shared secret between the Worker and the Hermes API
+ *                            server. Required — the container refuses to boot an
+ *                            unauthenticated gateway. Generate: `openssl rand -hex 32`.
+ *   - API_TOKEN and/or ADMIN_TOKEN — caller credentials. Without at least one,
+ *     protected routes fail closed (503) unless ALLOW_UNAUTHENTICATED=true.
+ *
+ * Optional:
+ *   - ADMIN_TOKEN            gates destructive control routes separately from chat.
+ *   - ALLOW_UNAUTHENTICATED  set to "true" to run an open Worker (local dev only).
  *   - HERMES_DEFAULT_MODEL   default model id (e.g. `anthropic/claude-sonnet-4-5`)
- *   - DASHBOARD_HOSTNAME     hostname whose traffic should be proxied to the dashboard (port 9119)
+ *   - DASHBOARD_HOSTNAME     hostname proxied to the dashboard (port 9119)
+ *   - CHAT_RATE_LIMITER / ADMIN_RATE_LIMITER  native rate-limit bindings.
  */
 export interface Env {
   HERMES: DurableObjectNamespace<HermesInstance>;
@@ -19,9 +27,14 @@ export interface Env {
   OPENAI_API_KEY?: string;
 
   API_TOKEN?: string;
+  ADMIN_TOKEN?: string;
+  ALLOW_UNAUTHENTICATED?: string;
   HERMES_GATEWAY_TOKEN?: string;
   HERMES_DEFAULT_MODEL?: string;
   DASHBOARD_HOSTNAME?: string;
+
+  CHAT_RATE_LIMITER?: RateLimit;
+  ADMIN_RATE_LIMITER?: RateLimit;
 }
 
 /**
@@ -31,6 +44,32 @@ export interface Env {
 export function getContainer(env: Env): DurableObjectStub<HermesInstance> {
   const id = env.HERMES.idFromName('main');
   return env.HERMES.get(id);
+}
+
+/**
+ * Error thrown when a request needs to reach the container but the Worker is
+ * missing the shared gateway secret. Distinct type so routes can map it to a
+ * clear 503 config error rather than a confusing 401/502 from the container.
+ */
+export class GatewayTokenMissingError extends Error {
+  constructor() {
+    super(
+      'HERMES_GATEWAY_TOKEN is not set. Run `wrangler secret put HERMES_GATEWAY_TOKEN` ' +
+        '(generate with `openssl rand -hex 32`). The container will not run an unauthenticated gateway.',
+    );
+    this.name = 'GatewayTokenMissingError';
+  }
+}
+
+/**
+ * Return the Worker↔container shared secret, or throw if unset. Every path that
+ * boots or reaches the container must go through this so an unauthenticated
+ * gateway can never be started or contacted with an empty token.
+ */
+export function requireGatewayToken(env: Env): string {
+  const token = env.HERMES_GATEWAY_TOKEN;
+  if (!token) throw new GatewayTokenMissingError();
+  return token;
 }
 
 /**
