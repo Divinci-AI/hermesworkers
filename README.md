@@ -87,19 +87,27 @@ npx wrangler login
 # 4. Push at least one provider API key as a secret
 npx wrangler secret put ANTHROPIC_API_KEY     # or OPENROUTER_API_KEY / OPENAI_API_KEY
 
-# 5. (Optional) Push a Worker-side bearer token to gate the API.
-#    Generate one with: openssl rand -hex 32
-npx wrangler secret put API_TOKEN
+# 5. Push the required Worker↔container secret and caller token.
+#    Generate each with: openssl rand -hex 32
+npx wrangler secret put HERMES_GATEWAY_TOKEN  # required — container won't run an open gateway
+npx wrangler secret put API_TOKEN             # required — caller bearer token (chat level)
+
+# 5b. (Recommended) Separate admin token so chat clients can't restart/stop/read logs.
+npx wrangler secret put ADMIN_TOKEN
 
 # 6. Deploy (Docker Desktop must be running)
 npx wrangler deploy
 ```
 
+> For a purely local/private deploy you may skip the caller tokens by setting
+> `ALLOW_UNAUTHENTICATED=true` — the Worker then serves openly. Never do this on
+> a public `*.workers.dev` URL. `HERMES_GATEWAY_TOKEN` is required regardless.
+
 After the first `deploy`, the Worker prints its `*.workers.dev` URL. Smoke test:
 
 ```bash
 WORKER_URL=https://<your-worker>.<your-account>.workers.dev
-TOKEN=<the API_TOKEN you set, or empty if you skipped it>
+TOKEN=<the API_TOKEN you set>
 
 curl -s "$WORKER_URL/api/health" \
   -H "Authorization: Bearer $TOKEN" | jq
@@ -120,16 +128,21 @@ The first request triggers a cold start — expect 15–60 seconds. Subsequent r
 
 | Method | Path                              | Description                                                  |
 | ------ | --------------------------------- | ------------------------------------------------------------ |
-| GET    | `/`                               | Self-describing JSON (no auth)                               |
-| GET    | `/api/health`                     | Liveness probe + Hermes gateway status                       |
-| POST   | `/v1/chat/completions`            | OpenAI-compatible chat (streaming supported)                 |
-| POST   | `/api/instance/wake`              | Boot the container without sending a chat message            |
-| POST   | `/api/instance/restart`           | Hard restart (kills PID 1, Cloudflare respawns the image)    |
-| POST   | `/api/instance/restart-gateway`   | Graceful Hermes process restart (re-reads BYOK secrets)      |
-| POST   | `/api/instance/stop`              | Stop the Hermes processes (container stays alive)            |
-| GET    | `/api/instance/logs`              | Dump process list, Hermes config, server log tail            |
+| Method | Path                              | Description                                                  | Auth  |
+| ------ | --------------------------------- | ------------------------------------------------------------ | ----- |
+| GET    | `/`                               | Self-describing JSON                                         | none  |
+| GET    | `/api/health`                     | Liveness probe + Hermes gateway status                       | chat  |
+| POST   | `/v1/chat/completions`            | OpenAI-compatible chat (streaming supported)                 | chat  |
+| POST   | `/api/instance/wake`              | Boot the container without sending a chat message            | chat  |
+| POST   | `/api/instance/restart`           | Hard restart (kills PID 1, Cloudflare respawns the image)    | admin |
+| POST   | `/api/instance/restart-gateway`   | Graceful Hermes process restart (re-reads BYOK secrets)      | admin |
+| POST   | `/api/instance/stop`              | Stop the Hermes processes (container stays alive)            | admin |
+| GET    | `/api/instance/logs`              | Process list, redacted config, server log tail               | admin |
 
-All `/v1/*` and `/api/*` paths are gated by `API_TOKEN` if you set it.
+**Auth levels.** `chat` = valid `API_TOKEN` (or `ADMIN_TOKEN`). `admin` =
+`ADMIN_TOKEN` (falls back to `API_TOKEN` when `ADMIN_TOKEN` is unset). Protected
+routes **fail closed** (`503`) when no token is configured, unless
+`ALLOW_UNAUTHENTICATED=true`. Only `/` is public.
 
 ## Native dashboard (optional)
 
@@ -152,7 +165,7 @@ Hermes ships a built-in web dashboard (sessions, analytics, models, crons, skill
    npx wrangler deploy
    ```
 
-Visiting `https://hermes.example.com` now proxies straight to the Hermes native UI inside the container. WebSocket upgrades work transparently. If `API_TOKEN` is set, the dashboard hostname requires the same bearer token (or a `hw_token=<value>` cookie) before it responds.
+Visiting `https://hermes.example.com` now proxies straight to the Hermes native UI inside the container. WebSocket upgrades work transparently. The dashboard hostname is gated at the chat level (fail-closed): supply your `API_TOKEN`/`ADMIN_TOKEN` as a bearer header or a `hw_token=<value>` cookie. See [docs/custom-domain.md](docs/custom-domain.md).
 
 See [`docs/custom-domain.md`](docs/custom-domain.md) for a more detailed walk-through.
 
@@ -194,20 +207,26 @@ This Worker does **not** boot the container at deploy time. The first chat (or `
 | `ANTHROPIC_API_KEY`        | ¹        | Anthropic API key — written to `~/.hermes/.env`                                           |
 | `OPENROUTER_API_KEY`       | ¹        | OpenRouter API key — written to `~/.hermes/.env`                                          |
 | `OPENAI_API_KEY`           | ¹        | OpenAI API key — written to `~/.hermes/.env`                                              |
-| `API_TOKEN`                | No       | Bearer token required on `/v1/*` and `/api/*` (recommended in production)                 |
-| `HERMES_GATEWAY_TOKEN`     | No       | Bearer token used between the Worker and the Hermes API server (auto-default if omitted) |
+| `HERMES_GATEWAY_TOKEN`     | **Yes**  | Shared secret between Worker and Hermes API server. Container refuses to boot without it. |
+| `API_TOKEN`                | ²        | Caller bearer token for `/v1/*` and `/api/*` (chat level)                                 |
+| `ADMIN_TOKEN`              | No       | Separate token gating `restart` / `restart-gateway` / `stop` / `logs` (admin level)      |
+| `ALLOW_UNAUTHENTICATED`    | No       | Set `"true"` to run an open Worker (local/private dev only)                               |
 | `HERMES_DEFAULT_MODEL`     | No       | Default model id (e.g. `anthropic/claude-sonnet-4-5`)                                     |
 | `DASHBOARD_HOSTNAME`       | No       | Hostname proxied to the Hermes native dashboard (see "Native dashboard")                  |
 
 ¹ At least one of the three provider keys is required.
+² Required unless `ALLOW_UNAUTHENTICATED=true`; otherwise protected routes fail closed (`503`).
 
 Push secrets with `npx wrangler secret put <NAME>`. Plain config values (like `DASHBOARD_HOSTNAME` and `HERMES_DEFAULT_MODEL`) can also live under `[vars]` in `wrangler.toml`, but secrets must use `wrangler secret put` to stay out of the deployed bundle.
 
 ## Security considerations
 
-- **Set `API_TOKEN`.** Without it, anyone who finds your `*.workers.dev` URL can talk to your Hermes (and bill your provider key). The token is a single shared secret — rotate it with `wrangler secret put API_TOKEN` followed by `POST /api/instance/restart` if you suspect compromise.
-- **The container is single-tenant.** Anyone who can reach `/v1/chat/completions` reaches the same Hermes session/state. If you need multi-user separation, run multiple deployments.
-- **Hermes' API server runs with `GATEWAY_ALLOW_ALL_USERS=true`** so the Worker proxy can reach it. The Worker is the only gate — keep `API_TOKEN` set in production.
+- **Auth fails closed.** Protected routes return `503` when no token is set (no accidental open Worker). Set `API_TOKEN`; rotate with `wrangler secret put API_TOKEN`. Open mode requires an explicit `ALLOW_UNAUTHENTICATED=true`.
+- **Use a separate `ADMIN_TOKEN`.** It gates the destructive/introspective routes (`restart`, `stop`, `logs`) so a leaked chat token can't destroy the instance, exhaust an infinite restart loop, or read logs. Tokens are compared in constant time.
+- **`HERMES_GATEWAY_TOKEN` is mandatory.** The container refuses to start an unauthenticated gateway — there is no weak default. The Worker strips its own auth credentials before proxying to the dashboard, so they never reach the Hermes process.
+- **The container is single-tenant** and the Hermes agent runs as a **non-root** user. Anyone who can reach `/v1/chat/completions` reaches the same Hermes session/state; for multi-user separation run multiple deployments or front the Worker with Cloudflare Access.
+- **Cap spend.** Any valid chat token can drive unbounded provider usage. Enable the `CHAT_RATE_LIMITER` binding (in `wrangler.toml`) and set provider-side spend limits.
+- **Hermes' API server runs with `GATEWAY_ALLOW_ALL_USERS=true`** so the Worker proxy can reach it. The Worker is the only gate — keep a token set in production.
 - **Cloudflare AI Gateway is supported** if you'd rather pay through Cloudflare than the upstream provider — set Hermes' OpenAI / Anthropic endpoint URLs accordingly via `hermes config set` in a custom `start-hermes.sh` override.
 
 ## Troubleshooting
