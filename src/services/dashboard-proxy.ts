@@ -17,7 +17,13 @@
  * keeps serving its API routes on the workers.dev URL.
  */
 
-import { getContainer, collectProviderKeys, type Env } from '../lib/container';
+import {
+  getContainer,
+  collectProviderKeys,
+  requireGatewayToken,
+  type Env,
+} from '../lib/container';
+import { checkAuth, extractBearer, extractCookieToken } from '../lib/auth';
 import {
   ensureGateway,
   HERMES_DASHBOARD_PORT,
@@ -37,25 +43,25 @@ export async function maybeHandleDashboard(
     return null;
   }
 
-  // Optional bearer-token gate. If API_TOKEN is set, require the same token on
-  // the dashboard hostname so it isn't exposed to the public internet.
-  if (env.API_TOKEN) {
-    const cookieToken = parseTokenCookie(request.headers.get('cookie') || '');
-    const authHeader = request.headers.get('authorization') || '';
-    const bearer = authHeader.startsWith('Bearer ')
-      ? authHeader.slice(7).trim()
-      : '';
-    const provided = cookieToken || bearer;
-    if (provided !== env.API_TOKEN) {
-      return new Response('Unauthorized', { status: 401 });
-    }
+  // Gate the dashboard hostname at the chat privilege level, fail-closed and in
+  // constant time via the shared auth path (accepts bearer header or hw_token
+  // cookie). Same fail-closed semantics as the API: no token configured ⇒ 503
+  // unless ALLOW_UNAUTHENTICATED=true.
+  const provided =
+    extractCookieToken(request.headers.get('cookie')) ||
+    extractBearer(request.headers.get('authorization'));
+  const auth = await checkAuth(env, provided, 'chat');
+  if (!auth.ok) {
+    return new Response(auth.body?.error === 'unauthorized' ? 'Unauthorized' : 'Server misconfigured', {
+      status: auth.status ?? 401,
+    });
   }
 
   const container = getContainer(env);
   try {
     await ensureGateway(container, {
       providerKeys: collectProviderKeys(env),
-      gatewayToken: env.HERMES_GATEWAY_TOKEN,
+      gatewayToken: requireGatewayToken(env),
       defaultModel: env.HERMES_DEFAULT_MODEL,
     });
   } catch (err) {
@@ -71,10 +77,25 @@ export async function maybeHandleDashboard(
   const isWebSocket =
     (request.headers.get('upgrade') || '').toLowerCase() === 'websocket';
 
+  // Strip the Worker's own auth credentials before forwarding so the hw_token
+  // cookie / bearer never reaches (or is logged by) the Hermes dashboard
+  // process. The container is authenticated separately via the gateway token.
+  const forwardedHeaders = new Headers(request.headers);
+  forwardedHeaders.delete('authorization');
+  const cookie = forwardedHeaders.get('cookie');
+  if (cookie) {
+    const stripped = cookie
+      .split(/;\s*/)
+      .filter((part) => !/^hw_token=/.test(part))
+      .join('; ');
+    if (stripped) forwardedHeaders.set('cookie', stripped);
+    else forwardedHeaders.delete('cookie');
+  }
+
   const targetUrl = `http://localhost:${HERMES_DASHBOARD_PORT}${url.pathname}${url.search}`;
   const targetReq = new Request(targetUrl, {
     method: request.method,
-    headers: request.headers,
+    headers: forwardedHeaders,
     body: ['GET', 'HEAD'].includes(request.method) ? undefined : request.body,
     redirect: 'manual',
   });
@@ -96,9 +117,4 @@ export async function maybeHandleDashboard(
   if (isWebSocket) return response;
 
   return response;
-}
-
-function parseTokenCookie(cookieHeader: string): string {
-  const match = cookieHeader.match(/hw_token=([^;]+)/);
-  return match ? decodeURIComponent(match[1]) : '';
 }

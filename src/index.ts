@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import type { Env } from './lib/container';
+import { authMiddleware, rateLimitMiddleware } from './lib/auth';
 import { chat } from './routes/chat';
 import { instance } from './routes/instance';
 import { maybeHandleDashboard } from './services/dashboard-proxy';
@@ -8,10 +9,13 @@ export { HermesInstance } from './hermesContainer';
 
 const app = new Hono<{ Bindings: Env }>();
 
-// Optional bearer-token gate on every /api/* and /v1/* request.
-// If API_TOKEN is left unset (single-machine dev), the Worker is open.
-app.use('/v1/*', requireToken);
-app.use('/api/*', requireToken);
+// Baseline gate: every /api/* and /v1/* request needs at least the chat token.
+// Fails closed (503) when no token is configured, unless ALLOW_UNAUTHENTICATED
+// is explicitly set. Destructive control routes add an admin-level gate on top
+// (see routes/instance.ts). Rate limiting runs first so unauthenticated floods
+// are shed before any token comparison.
+app.use('/v1/*', rateLimitMiddleware('chat'), authMiddleware('chat'));
+app.use('/api/*', rateLimitMiddleware('chat'), authMiddleware('chat'));
 
 app.route('/', chat);
 app.route('/', instance);
@@ -43,17 +47,3 @@ export default {
     return app.fetch(request, env, ctx);
   },
 };
-
-async function requireToken(c: any, next: any) {
-  const expected = c.env.API_TOKEN;
-  if (!expected) {
-    // No token configured — open Worker (single-machine / private deployment).
-    return next();
-  }
-  const header = c.req.header('authorization') || '';
-  const bearer = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
-  if (bearer !== expected) {
-    return c.json({ error: 'unauthorized' }, 401);
-  }
-  return next();
-}
