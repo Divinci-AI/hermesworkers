@@ -145,6 +145,70 @@ hosted.post('/hosted/agent/stop', async (c) => {
   }
 });
 
+/**
+ * Full-surface per-agent proxy. Forwards ANY path under /hosted/agent/proxy/* to
+ * the agent's container Hermes API (/v1/*, /api/sessions/*, /health, …) so an
+ * external client — a local Hermes with GATEWAY_PROXY_URL, the desktop app, or
+ * any OpenAI-compatible client — can drive the agent through Divinci's proxy.
+ * Still service-authed (only Divinci's backend calls this) + scoped by agentId.
+ */
+hosted.all('/hosted/agent/proxy/*', async (c) => {
+  const agentId = c.var.agentId;
+  const container = getContainerForAgent(c.env, agentId);
+
+  let gatewayToken: string;
+  try {
+    gatewayToken = requireGatewayToken(c.env);
+  } catch (err) {
+    return c.json({ error: 'server_misconfigured', message: err instanceof Error ? err.message : String(err) }, 503);
+  }
+
+  try {
+    await withRetry(
+      () => ensureGateway(container, {
+        providerKeys: collectProviderKeys(c.env),
+        gatewayToken,
+        defaultModel: c.env.HERMES_DEFAULT_MODEL,
+      }),
+      { attempts: 3, timeoutMs: 300_000, label: `ensure:${agentId}` },
+    );
+  } catch (err) {
+    return c.json({ error: 'container_not_ready', message: err instanceof Error ? err.message : String(err) }, 503);
+  }
+
+  const reqUrl = new URL(c.req.raw.url);
+  const subPath = reqUrl.pathname.replace(/^\/hosted\/agent\/proxy/, '') || '/';
+  const target = `http://localhost:${HERMES_API_PORT}${subPath}${reqUrl.search}`;
+  const method = c.req.raw.method;
+
+  const headers = new Headers();
+  const ct = c.req.header('content-type');
+  if (ct) headers.set('content-type', ct);
+  const accept = c.req.header('accept');
+  if (accept) headers.set('accept', accept);
+  // Pass a multi-user session key through if the client sent one.
+  const sessionKey = c.req.header('x-hermes-session-key');
+  if (sessionKey) headers.set('x-hermes-session-key', sessionKey);
+  headers.set('authorization', `Bearer ${gatewayToken}`);
+
+  const body = method === 'GET' || method === 'HEAD' ? undefined : await c.req.raw.arrayBuffer();
+  const upstream = new Request(target, { method, headers, body });
+
+  try {
+    const response = await withRetry<Response>(
+      () => (container as any).containerFetch(upstream, HERMES_API_PORT),
+      { attempts: 2, timeoutMs: 300_000, isRetryable: () => false, label: `proxy:${agentId}` },
+    );
+    return new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers,
+    });
+  } catch (err) {
+    return c.json({ error: 'gateway_error', message: err instanceof Error ? err.message : String(err) }, 502);
+  }
+});
+
 /** Per-agent chat completions — same behavior as single-tenant, scoped by agent. */
 hosted.post('/hosted/agent/v1/chat/completions', async (c) => {
   const agentId = c.var.agentId;
