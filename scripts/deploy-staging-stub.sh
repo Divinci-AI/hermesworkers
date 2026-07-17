@@ -90,11 +90,15 @@ do_deploy() {
   printf '%s' "$HERMES_GATEWAY_TOKEN" | $WRANGLER secret put HERMES_GATEWAY_TOKEN -c wrangler.staging.toml
   printf '%s' "$SERVICE_AUTH_SECRET"  | $WRANGLER secret put SERVICE_AUTH_SECRET  -c wrangler.staging.toml
   # Functional runs need a provider key so Hermes can actually answer.
+  # NOTE: only ship keys you have VALIDATED. Hermes makes auxiliary LLM calls
+  # (memory/title/routing) and fails EVERY turn with "HTTP 401: Missing
+  # Authentication header" if ANY configured provider key is dead — even when the
+  # main model is a different, working provider. This cost a long debugging session
+  # (a stale OPENAI_API_KEY broke every Gemini turn). We deliberately do NOT wire an
+  # OPENAI_API_KEY branch here: all our OpenAI keys are dead and would poison the
+  # container. If you ever add a provider, confirm the key authenticates first.
   if [ -n "${PROVIDER_KEY_ANTHROPIC:-}" ]; then
     printf '%s' "$PROVIDER_KEY_ANTHROPIC" | $WRANGLER secret put ANTHROPIC_API_KEY -c wrangler.staging.toml
-  fi
-  if [ -n "${PROVIDER_KEY_OPENAI:-}" ]; then
-    printf '%s' "$PROVIDER_KEY_OPENAI" | $WRANGLER secret put OPENAI_API_KEY -c wrangler.staging.toml
   fi
   if [ -n "${PROVIDER_KEY_GEMINI:-}" ]; then
     printf '%s' "$PROVIDER_KEY_GEMINI" | $WRANGLER secret put GEMINI_API_KEY -c wrangler.staging.toml
