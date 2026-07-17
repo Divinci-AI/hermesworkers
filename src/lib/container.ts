@@ -33,6 +33,11 @@ export interface Env {
   HERMES_DEFAULT_MODEL?: string;
   DASHBOARD_HOSTNAME?: string;
 
+  // Hosted (multi-tenant) mode: shared secret proving the caller is Divinci's
+  // public-api backend. When set, hosted routes require it AND a trusted agent
+  // id; the DO/container is resolved per-agent. Absent ⇒ single-tenant mode.
+  SERVICE_AUTH_SECRET?: string;
+
   CHAT_RATE_LIMITER?: RateLimit;
   ADMIN_RATE_LIMITER?: RateLimit;
 }
