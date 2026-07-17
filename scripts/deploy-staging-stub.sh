@@ -120,6 +120,18 @@ do_teardown() {
   load_creds
   $WRANGLER delete -c wrangler.staging.toml --force || \
     echo "Manual teardown: $WRANGLER delete --name ${WORKER_NAME} --force"
+  # `wrangler delete` removes the Worker but NOT the associated Containers
+  # application — it lingers (billable, and blocks a same-name redeploy). Remove
+  # it explicitly. `containers list/delete` are account-level, so run them from a
+  # config-free dir to avoid the placeholder wrangler.toml tripping validation.
+  local cid
+  cid=$( (cd /tmp && $WRANGLER containers list 2>/dev/null) \
+    | grep "${WORKER_NAME}-hermesinstance" | grep -oE '[0-9a-f-]{36}' | head -1)
+  if [ -n "$cid" ]; then
+    ( cd /tmp && yes | $WRANGLER containers delete "$cid" >/dev/null 2>&1 ) \
+      && echo "Deleted container application $cid" \
+      || echo "Container app cleanup needs manual step: wrangler containers delete $cid"
+  fi
   rm -f wrangler.staging.toml
   echo "Torn down. Keep $SECRETS_FILE only if re-deploying."
 }
