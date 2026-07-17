@@ -20,9 +20,15 @@ req() { curl -sS -X "$1" "$WORKER_URL$3" -H "$AUTH" -H "X-Divinci-Agent-Id: $2" 
 
 echo "== 1. Non-root boot check (both agents) =="
 for id in "$A" "$B"; do
-  r=$(req GET "$id" /hosted/agent/boot-check)
-  echo "  $id: $r"
-  echo "$r" | grep -q '"nonRoot":true' || { echo "  ✗ $id gateway is NOT running as non-root"; fail=1; }
+  # Retry through transient cold-start / "Durable Object reset because its code
+  # was updated" churn that follows the secret-put redeploys.
+  ok=0
+  for attempt in 1 2 3 4 5 6; do
+    r=$(req GET "$id" /hosted/agent/boot-check)
+    if echo "$r" | grep -q '"nonRoot":true'; then ok=1; echo "  $id: $r"; break; fi
+    sleep 8
+  done
+  [ "$ok" = 1 ] || { echo "  ✗ $id gateway is NOT running as non-root (last: $r)"; fail=1; }
 done
 
 echo "== 2. Real chat completion (both agents) =="
