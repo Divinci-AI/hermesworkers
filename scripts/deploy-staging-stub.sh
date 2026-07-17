@@ -99,6 +99,20 @@ do_deploy() {
   if [ -n "${HERMES_MODEL:-}" ]; then
     printf '%s' "$HERMES_MODEL" | $WRANGLER secret put HERMES_DEFAULT_MODEL -c wrangler.staging.toml
   fi
+  # Secrets propagate to the edge a few seconds after `secret put`; the smoke can
+  # otherwise race and see hosted_mode_not_configured. Poll the hosted gate with a
+  # valid bearer but NO agent id: 503 = secret not live yet, 400 = live (missing
+  # agent id). This rejects in the auth middleware, so it never spins a container.
+  if [ -n "$url" ]; then
+    echo "Waiting for SERVICE_AUTH_SECRET to propagate..."
+    local i code
+    for i in $(seq 1 24); do
+      code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$url/hosted/agent/probe" \
+        -H "Authorization: Bearer $SERVICE_AUTH_SECRET" 2>/dev/null || echo 000)
+      if [ "$code" = "400" ]; then echo "  secret live (${i}x)"; break; fi
+      sleep 5
+    done
+  fi
   echo "Deployed at: ${url:-<url-not-parsed>}. Secrets in $SECRETS_FILE."
 }
 
