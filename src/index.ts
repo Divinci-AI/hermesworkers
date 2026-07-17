@@ -3,6 +3,7 @@ import type { Env } from './lib/container';
 import { authMiddleware, rateLimitMiddleware } from './lib/auth';
 import { chat } from './routes/chat';
 import { instance } from './routes/instance';
+import { hosted } from './routes/hosted';
 import { maybeHandleDashboard } from './services/dashboard-proxy';
 
 export { HermesInstance } from './hermesContainer';
@@ -19,6 +20,10 @@ app.use('/api/*', rateLimitMiddleware('chat'), authMiddleware('chat'));
 
 app.route('/', chat);
 app.route('/', instance);
+
+// Hosted multi-tenant routes carry their own service-auth gate (see routes/hosted.ts),
+// so they are mounted outside the chat/admin middleware above.
+app.route('/', hosted);
 
 app.get('/', (c) =>
   c.json({

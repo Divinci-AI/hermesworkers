@@ -3,8 +3,25 @@ import {
   isValidAgentId,
   resolveAgentId,
   checkServiceAuth,
+  getContainerForAgent,
 } from '../src/lib/tenant';
 import type { Env } from '../src/lib/container';
+
+// A mock DurableObjectNamespace recording the names it's asked to resolve, so we
+// can assert the routing invariant: distinct agentIds ⇒ distinct DO names.
+function mockNamespace() {
+  const namesResolved: string[] = [];
+  const HERMES = {
+    idFromName(name: string) {
+      namesResolved.push(name);
+      return { __name: name, toString: () => `id(${name})`, equals: (o: any) => o?.__name === name };
+    },
+    get(id: any) {
+      return { __stubFor: id.__name };
+    },
+  } as unknown as Env['HERMES'];
+  return { HERMES, namesResolved };
+}
 
 function env(partial: Partial<Env>): Env {
   return { HERMES: {} as Env['HERMES'], ...partial };
@@ -72,5 +89,43 @@ describe('checkServiceAuth', () => {
   it('succeeds with valid token + valid agent id, returning the id', async () => {
     const out = await checkServiceAuth(e, `Bearer ${secret}`, 'agent-01hzx9k2q3');
     expect(out).toMatchObject({ ok: true, agentId: 'agent-01hzx9k2q3' });
+  });
+});
+
+describe('getContainerForAgent — routing isolation invariant', () => {
+  it('resolves two distinct agents to two distinct, namespaced DO names', () => {
+    const { HERMES, namesResolved } = mockNamespace();
+    const e = env({ HERMES });
+
+    const a = getContainerForAgent(e, 'agent-aaaaaaaa') as any;
+    const b = getContainerForAgent(e, 'agent-bbbbbbbb') as any;
+
+    expect(namesResolved).toEqual(['agent:agent-aaaaaaaa', 'agent:agent-bbbbbbbb']);
+    expect(a.__stubFor).toBe('agent:agent-aaaaaaaa');
+    expect(b.__stubFor).toBe('agent:agent-bbbbbbbb');
+    expect(a.__stubFor).not.toBe(b.__stubFor); // different container, always
+  });
+
+  it('resolves the same agent to the same DO name every time (sticky)', () => {
+    const { HERMES } = mockNamespace();
+    const e = env({ HERMES });
+    const first = getContainerForAgent(e, 'agent-cccccccc') as any;
+    const second = getContainerForAgent(e, 'agent-cccccccc') as any;
+    expect(first.__stubFor).toBe(second.__stubFor);
+  });
+
+  it('namespaces under `agent:` so no agent can ever collide with the single-tenant `main`', () => {
+    const { HERMES, namesResolved } = mockNamespace();
+    getContainerForAgent(env({ HERMES }), 'agent-dddddddd');
+    expect(namesResolved[0]).toBe('agent:agent-dddddddd');
+    expect(namesResolved[0]).not.toBe('main');
+  });
+
+  it('THROWS on an invalid agentId — never falls back to a shared container', () => {
+    const { HERMES } = mockNamespace();
+    const e = env({ HERMES });
+    for (const bad of ['../evil', 'MAIN', 'main', 'a/b', 'short']) {
+      expect(() => getContainerForAgent(e, bad)).toThrow(/invalid agentId/i);
+    }
   });
 });
