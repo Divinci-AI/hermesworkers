@@ -39,12 +39,25 @@ v0.1, mapping each audit finding to its fix. Every code change is verified by
 - **`hermes dashboard --insecure`** stays — it only lets Hermes bind `0.0.0.0`
   (unreachable except via the Worker), not disable transport security.
 
-## Needs validation on the live Sandbox runtime
+## Validated
 
-The non-root privilege drop (`gosu hermes`) and the `~/.hermes` ownership handoff
-are correct in principle but assume the Sandbox control plane launches
-`start-hermes.sh` as root (so it can `chown` before dropping). Verify on a real
-deploy that: (a) the gateway/dashboard start as `hermes` and can read `~/.hermes`,
-and (b) `POST /api/instance/restart` (which execs `kill -9 1`) still succeeds —
-that exec runs via the control plane, not the de-rooted process, so it should,
-but confirm before relying on it.
+**Container builds against real Hermes (2026-07-17).** `docker build` of this
+Dockerfile with `HERMES_VERSION=v2026.7.7.2` succeeds end-to-end: the Node
+tarball SHA-256 check passes (pinned hashes correct), real Hermes installs, and
+the `hermes dashboard --help` verification step passes. Runtime checks on the
+built image confirm the hardening landed:
+`id hermes` → `uid=10001(hermes)`, `gosu` at `/usr/sbin/gosu`,
+`gosu hermes id -un` → `hermes`, `hermes --version` → `Hermes Agent v0.18.2
+(2026.7.7.2)`. So the non-root user + privilege-drop mechanism work with real
+Hermes.
+
+## Still needs validation on the live Sandbox runtime
+
+The gosu drop is proven at the container level; what remains is the Sandbox
+*orchestration* path. On a real hosted deploy confirm that: (a) when the Sandbox
+control plane launches `start-hermes.sh` via `startProcess`, the gateway/dashboard
+end up running as `hermes` and can read `~/.hermes` (the script chowns before the
+gosu exec), and (b) `POST /api/instance/restart` (which execs `kill -9 1`) still
+succeeds — that exec runs via the control plane, not the de-rooted process, so it
+should, but confirm before relying on it. `scripts/functional-smoke.sh`'s
+`boot-check` asserts (a) automatically.
