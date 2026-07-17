@@ -9,7 +9,7 @@
 
 import { Hono } from 'hono';
 import type { Env } from '../lib/container';
-import { collectProviderKeys, requireGatewayToken } from '../lib/container';
+import { collectProviderKeys, providerKeysWithByok, requireGatewayToken } from '../lib/container';
 import {
   checkServiceAuth,
   getContainerForAgent,
@@ -166,7 +166,11 @@ hosted.all('/hosted/agent/proxy/*', async (c) => {
   try {
     await withRetry(
       () => ensureGateway(container, {
-        providerKeys: collectProviderKeys(c.env),
+        providerKeys: providerKeysWithByok(
+          c.env,
+          c.req.header('x-hermes-provider'),
+          c.req.header('x-hermes-provider-key'),
+        ),
         gatewayToken,
         defaultModel: c.env.HERMES_DEFAULT_MODEL,
       }),
@@ -230,7 +234,11 @@ hosted.post('/hosted/agent/v1/chat/completions', async (c) => {
   try {
     await withRetry(
       () => ensureGateway(container, {
-        providerKeys: collectProviderKeys(c.env),
+        providerKeys: providerKeysWithByok(
+          c.env,
+          c.req.header('x-hermes-provider'),
+          c.req.header('x-hermes-provider-key'),
+        ),
         gatewayToken,
         defaultModel: c.env.HERMES_DEFAULT_MODEL,
       }),

@@ -95,3 +95,32 @@ export function collectProviderKeys(env: Env): Record<string, string> {
   }
   return keys;
 }
+
+const BYOK_ENV_BY_PROVIDER: Record<string, string> = {
+  openai: "OPENAI_API_KEY",
+  anthropic: "ANTHROPIC_API_KEY",
+  openrouter: "OPENROUTER_API_KEY",
+  gemini: "GEMINI_API_KEY",
+};
+
+/**
+ * Provider keys for boot, overlaying a per-agent BYOK key (from the
+ * X-Hermes-Provider / X-Hermes-Provider-Key headers set by Divinci's backend)
+ * on top of the platform keys. When present, the agent's container authenticates
+ * to the LLM with the customer's own key.
+ */
+export function providerKeysWithByok(
+  env: Env,
+  byokProvider: string | null | undefined,
+  byokKey: string | null | undefined,
+): Record<string, string> {
+  const keys = collectProviderKeys(env);
+  if (byokProvider && byokKey) {
+    const envName = BYOK_ENV_BY_PROVIDER[byokProvider];
+    if (envName) {
+      keys[envName] = byokKey;
+      if (byokProvider === "gemini") keys.GOOGLE_API_KEY = byokKey;
+    }
+  }
+  return keys;
+}
