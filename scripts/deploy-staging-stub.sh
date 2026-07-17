@@ -60,7 +60,7 @@ new_sqlite_classes = ["HermesInstance"]
 
 [[containers]]
 class_name = "HermesInstance"
-image = "./container/Dockerfile.stub"
+image = "${IMAGE_DOCKERFILE:-./container/Dockerfile.stub}"
 max_instances = 10
 instance_type = "standard-1"
 TOML
@@ -89,6 +89,10 @@ do_deploy() {
   . "$SECRETS_FILE"
   printf '%s' "$HERMES_GATEWAY_TOKEN" | $WRANGLER secret put HERMES_GATEWAY_TOKEN -c wrangler.staging.toml
   printf '%s' "$SERVICE_AUTH_SECRET"  | $WRANGLER secret put SERVICE_AUTH_SECRET  -c wrangler.staging.toml
+  # Functional runs need a provider key so Hermes can actually answer.
+  if [ -n "${PROVIDER_KEY_ANTHROPIC:-}" ]; then
+    printf '%s' "$PROVIDER_KEY_ANTHROPIC" | $WRANGLER secret put ANTHROPIC_API_KEY -c wrangler.staging.toml
+  fi
   echo "Deployed at: ${url:-<url-not-parsed>}. Secrets in $SECRETS_FILE."
 }
 
@@ -103,7 +107,7 @@ do_smoke() {
     url="https://${WORKER_NAME}.${sub}"
   fi
   echo "Smoke against $url"
-  WORKER_URL="$url" SERVICE_AUTH_SECRET="$SERVICE_AUTH_SECRET" ./scripts/isolation-smoke.sh
+  WORKER_URL="$url" SERVICE_AUTH_SECRET="$SERVICE_AUTH_SECRET" "${SMOKE_SCRIPT:-./scripts/isolation-smoke.sh}"
 }
 
 do_teardown() {

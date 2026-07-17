@@ -81,6 +81,52 @@ hosted.get('/hosted/agent/probe', async (c) => {
   }
 });
 
+/**
+ * Boot check — start the gateway, then report the OS user the Hermes gateway
+ * process actually runs as. Proves the v0.2 privilege drop: the gateway must run
+ * as the unprivileged `hermes` user (via gosu), not root.
+ */
+hosted.get('/hosted/agent/boot-check', async (c) => {
+  const agentId = c.var.agentId;
+  const container = getContainerForAgent(c.env, agentId);
+
+  let gatewayToken: string;
+  try {
+    gatewayToken = requireGatewayToken(c.env);
+  } catch (err) {
+    return c.json({ error: 'server_misconfigured', message: err instanceof Error ? err.message : String(err) }, 503);
+  }
+
+  try {
+    await withRetry(
+      () => ensureGateway(container, {
+        providerKeys: collectProviderKeys(c.env),
+        gatewayToken,
+        defaultModel: c.env.HERMES_DEFAULT_MODEL,
+      }),
+      { attempts: 3, timeoutMs: 300_000, label: `boot:${agentId}` },
+    );
+  } catch (err) {
+    return c.json({ ok: false, agentId, error: 'container_not_ready', message: err instanceof Error ? err.message : String(err) }, 503);
+  }
+
+  const result = await withRetry<{ stdout?: string }>(
+    () => (container as any).exec(
+      "printf 'gateway_user=%s\\n' \"$(ps -o user= -p \"$(pgrep -f 'hermes gateway' | head -1)\" 2>/dev/null | tr -d ' ')\"",
+    ),
+    { attempts: 3, timeoutMs: 60_000, label: `boot-check:${agentId}` },
+  );
+  const out = (result?.stdout ?? '').trim();
+  const gatewayUser = (out.match(/gateway_user=(\S+)/) || [])[1] ?? '';
+  return c.json({
+    ok: true,
+    agentId,
+    gatewayUser,
+    nonRoot: gatewayUser !== '' && gatewayUser !== 'root', // true ⇒ gosu drop worked
+    raw: out,
+  });
+});
+
 /** Per-agent chat completions — same behavior as single-tenant, scoped by agent. */
 hosted.post('/hosted/agent/v1/chat/completions', async (c) => {
   const agentId = c.var.agentId;
