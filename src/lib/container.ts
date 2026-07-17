@@ -26,6 +26,9 @@ export interface Env {
   OPENROUTER_API_KEY?: string;
   OPENAI_API_KEY?: string;
   GEMINI_API_KEY?: string;
+  // Nous Portal key — Hermes's default inference gateway (nousresearch/hermes-4-*
+  // and many proxied models). Without it Hermes' default model 401s.
+  NOUS_API_KEY?: string;
 
   API_TOKEN?: string;
   ADMIN_TOKEN?: string;
@@ -93,6 +96,7 @@ export function collectProviderKeys(env: Env): Record<string, string> {
     keys.GEMINI_API_KEY = env.GEMINI_API_KEY;
     keys.GOOGLE_API_KEY = env.GEMINI_API_KEY;
   }
+  if (env.NOUS_API_KEY) keys.NOUS_API_KEY = env.NOUS_API_KEY;
   return keys;
 }
 

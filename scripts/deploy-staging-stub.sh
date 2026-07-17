@@ -99,6 +99,9 @@ do_deploy() {
   if [ -n "${PROVIDER_KEY_GEMINI:-}" ]; then
     printf '%s' "$PROVIDER_KEY_GEMINI" | $WRANGLER secret put GEMINI_API_KEY -c wrangler.staging.toml
   fi
+  if [ -n "${PROVIDER_KEY_NOUS:-}" ]; then
+    printf '%s' "$PROVIDER_KEY_NOUS" | $WRANGLER secret put NOUS_API_KEY -c wrangler.staging.toml
+  fi
   if [ -n "${HERMES_MODEL:-}" ]; then
     printf '%s' "$HERMES_MODEL" | $WRANGLER secret put HERMES_DEFAULT_MODEL -c wrangler.staging.toml
   fi
