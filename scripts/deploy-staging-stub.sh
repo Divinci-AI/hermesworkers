@@ -24,10 +24,22 @@ WRANGLER="${WRANGLER:-npx --yes wrangler@4}"   # Containers need a recent wrangl
 SECRETS_FILE=".staging-test-secrets.env"
 
 load_creds() {
-  CF_TOKEN="${CF_TOKEN:-$(sed -nE 's/\r$//; s/^CLOUDFLARE_API_TOKEN=["'\'']?([^"'\'']*)["'\'']?$/\1/p' "$CREDS" | head -1)}"
-  CF_ACCT="${CF_ACCT:-$(sed -nE 's/\r$//; s/^CLOUDFLARE_ACCOUNT_ID=["'\'']?([^"'\'']*)["'\'']?$/\1/p' "$CREDS" | head -1)}"
-  [ -n "$CF_TOKEN" ] && [ -n "$CF_ACCT" ] || { echo "Missing CF_TOKEN/CF_ACCT"; exit 1; }
-  export CLOUDFLARE_API_TOKEN="$CF_TOKEN"
+  CF_TOKEN="${CF_TOKEN:-$(sed -nE 's/\r$//; s/^CLOUDFLARE_API_TOKEN=["'\'']?([^"'\'']*)["'\'']?$/\1/p' "$CREDS" 2>/dev/null | head -1)}"
+  CF_ACCT="${CF_ACCT:-$(sed -nE 's/\r$//; s/^CLOUDFLARE_ACCOUNT_ID=["'\'']?([^"'\'']*)["'\'']?$/\1/p' "$CREDS" 2>/dev/null | head -1)}"
+  [ -n "$CF_ACCT" ] && export CLOUDFLARE_ACCOUNT_ID="$CF_ACCT"
+  # Use the file token ONLY if it actually authenticates; otherwise fall back to
+  # a `wrangler login` OAuth session (the staging file token is known to expire).
+  if [ -n "$CF_TOKEN" ] && curl -sf "https://api.cloudflare.com/client/v4/accounts/${CF_ACCT}" \
+        -H "Authorization: Bearer $CF_TOKEN" >/dev/null 2>&1; then
+    export CLOUDFLARE_API_TOKEN="$CF_TOKEN"
+  else
+    echo "note: no valid file token — relying on 'wrangler login' OAuth session." >&2
+    unset CLOUDFLARE_API_TOKEN || true
+    if ! $WRANGLER whoami >/dev/null 2>&1; then
+      echo "ERROR: not authenticated. Run 'npx wrangler login' (or set CF_TOKEN=<scoped token>) and retry." >&2
+      exit 1
+    fi
+  fi
 }
 
 write_config() {
