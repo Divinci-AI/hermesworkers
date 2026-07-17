@@ -93,6 +93,12 @@ do_deploy() {
   if [ -n "${PROVIDER_KEY_ANTHROPIC:-}" ]; then
     printf '%s' "$PROVIDER_KEY_ANTHROPIC" | $WRANGLER secret put ANTHROPIC_API_KEY -c wrangler.staging.toml
   fi
+  if [ -n "${PROVIDER_KEY_OPENAI:-}" ]; then
+    printf '%s' "$PROVIDER_KEY_OPENAI" | $WRANGLER secret put OPENAI_API_KEY -c wrangler.staging.toml
+  fi
+  if [ -n "${HERMES_MODEL:-}" ]; then
+    printf '%s' "$HERMES_MODEL" | $WRANGLER secret put HERMES_DEFAULT_MODEL -c wrangler.staging.toml
+  fi
   echo "Deployed at: ${url:-<url-not-parsed>}. Secrets in $SECRETS_FILE."
 }
 

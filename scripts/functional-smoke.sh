@@ -26,7 +26,8 @@ for id in "$A" "$B"; do
 done
 
 echo "== 2. Real chat completion (both agents) =="
-BODY='{"model":"anthropic/claude-sonnet-4-5","messages":[{"role":"user","content":"Reply with exactly: PONG"}],"stream":false}'
+MODEL="${SMOKE_MODEL:-anthropic/claude-sonnet-4-5}"
+BODY="{\"model\":\"${MODEL}\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with exactly: PONG\"}],\"stream\":false}"
 for id in "$A" "$B"; do
   code=$(curl -sS -o /tmp/hw-chat-$id.json -w '%{http_code}' -X POST "$WORKER_URL/hosted/agent/v1/chat/completions" \
     -H "$AUTH" -H "X-Divinci-Agent-Id: $id" -H "Content-Type: application/json" -d "$BODY")
