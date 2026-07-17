@@ -16,7 +16,7 @@ import {
   SERVICE_AGENT_HEADER,
 } from '../lib/tenant';
 import { withRetry } from '../lib/resilience';
-import { ensureGateway, HERMES_API_PORT } from '../services/container-lifecycle';
+import { ensureGateway, HERMES_API_PORT, killGateway } from '../services/container-lifecycle';
 
 type HostedCtx = { Bindings: Env; Variables: { agentId: string } };
 
@@ -125,6 +125,24 @@ hosted.get('/hosted/agent/boot-check', async (c) => {
     nonRoot: gatewayUser !== '' && gatewayUser !== 'root', // true ⇒ gosu drop worked
     raw: out,
   });
+});
+
+/**
+ * Stop an agent's gateway/dashboard processes. Called when Divinci deletes the
+ * agent record so the container stops doing work and sleep-evicts promptly
+ * (there is no external "delete a DO" — stopping the process is the teardown).
+ */
+hosted.post('/hosted/agent/stop', async (c) => {
+  const agentId = c.var.agentId;
+  const container = getContainerForAgent(c.env, agentId);
+  try {
+    await withRetry(() => killGateway(container), {
+      attempts: 2, timeoutMs: 60_000, isRetryable: () => false, label: `stop:${agentId}`,
+    });
+    return c.json({ ok: true, agentId, status: 'stopped' });
+  } catch (err) {
+    return c.json({ ok: false, agentId, error: err instanceof Error ? err.message : String(err) }, 502);
+  }
 });
 
 /** Per-agent chat completions — same behavior as single-tenant, scoped by agent. */
