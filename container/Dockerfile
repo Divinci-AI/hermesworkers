@@ -48,13 +48,13 @@ ENV HOME=/home/hermes
 RUN mkdir -p /home/hermes
 
 # Install Hermes from source, pinned for reproducibility.
-# v2026.4.30 includes the `hermes dashboard` command (web UI on port 9119) and
-# the API server. Pin an immutable commit via the HERMES_COMMIT build-arg for
-# supply-chain safety (git tags are mutable; a moved tag would silently change
-# what you ship). The clone FAILS HARD on a bad tag — no silent fallback to an
-# unpinned default branch.
-ENV HERMES_VERSION=v2026.4.30
-ARG HERMES_COMMIT=""
+# Pinned to NousResearch/hermes-agent v2026.7.7.2 (has `hermes gateway`,
+# `hermes dashboard`, and the API server). HERMES_COMMIT defaults to that tag's
+# immutable commit SHA for supply-chain safety (git tags are mutable; a moved
+# tag would silently change what you ship). The clone FAILS HARD on a bad tag —
+# no silent fallback to an unpinned default branch. Override both to bump.
+ENV HERMES_VERSION=v2026.7.7.2
+ARG HERMES_COMMIT="b7751df34688835a108e0d630f3495fc11f3df79"
 WORKDIR /opt
 RUN git clone --depth 1 --branch "${HERMES_VERSION}" https://github.com/NousResearch/hermes-agent.git hermes-agent \
     && if [ -n "${HERMES_COMMIT}" ]; then \
