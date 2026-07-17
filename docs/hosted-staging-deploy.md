@@ -9,6 +9,24 @@ account and prove two agents stay isolated with `scripts/isolation-smoke.sh`.
 > read back ONLY their own marker (`isolated:true`, no cross-read), auth rejected
 > a bad service token (401) and a malformed agent id (400), then torn down.
 >
+> **✅ REAL CHAT ANSWERS PROVEN IN THE CLOUD (2026-07-17):** a hosted agent
+> returned a genuine Gemini answer (`PONG`) end-to-end via the proxy. Two
+> operational rules learned the hard way:
+>
+> 1. **Only ship provider keys that are VALID.** Hermes makes *auxiliary* LLM
+>    calls (memory/title/routing) and **fails the whole turn with "HTTP 401:
+>    Missing Authentication header" if ANY configured provider key is dead** —
+>    even when the main model is a different, working provider. A stale
+>    `OPENAI_API_KEY` in `~/.hermes/.env` broke every Gemini turn until removed.
+>    Never set a provider secret you haven't validated.
+> 2. **Use a CURRENT catalog model.** A stale model id (e.g. `gemini-2.0-flash`)
+>    makes Hermes silently fall back to its Nous-Portal OAuth default (which
+>    can't authenticate headlessly) → the same 401. Use a model Hermes lists
+>    (e.g. `google/gemini-3-flash-preview`). The Nous `nous` provider itself is
+>    OAuth-device-code (interactive) and unusable in a container.
+> 3. Fast diagnosis: run the built image locally (`docker run … --entrypoint bash`
+>    then `hermes -z "…"`) — a ~30s loop vs a 10-min cloud deploy.
+>
 > **✅ FUNCTIONAL PROVEN LIVE (2026-07-17)** against **real Hermes v2026.7.7.2**
 > (`IMAGE_DOCKERFILE=./container/Dockerfile SMOKE_SCRIPT=./scripts/functional-smoke.sh
 > PROVIDER_KEY_OPENAI=… HERMES_MODEL=gpt-4o-mini`): both agents (a) boot the Hermes
