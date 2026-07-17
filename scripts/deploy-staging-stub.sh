@@ -71,25 +71,37 @@ do_deploy() {
   load_creds; write_config
   npm ci
   npm run typecheck && npm test
-  $WRANGLER deploy -c wrangler.staging.toml
+  # Stream deploy output (tee) so failures are VISIBLE — do not swallow into a
+  # var (that hid a keychain error under set -e). Extract the URL from the tee'd file.
+  local deploy_out="/tmp/hw-deploy-$$.out"
+  if ! $WRANGLER deploy -c wrangler.staging.toml 2>&1 | tee "$deploy_out"; then
+    echo "deploy step FAILED (see output above)"; return 1
+  fi
+  local url
+  url="$(grep -oiE 'https://[a-z0-9.-]+\.workers\.dev' "$deploy_out" | head -1)"; rm -f "$deploy_out"
   if [ ! -f "$SECRETS_FILE" ]; then
     { echo "HERMES_GATEWAY_TOKEN=$(openssl rand -hex 32)";
       echo "SERVICE_AUTH_SECRET=$(openssl rand -hex 32)"; } > "$SECRETS_FILE"
   fi
+  # Persist the resolved URL for the smoke step.
+  grep -q '^WORKER_URL=' "$SECRETS_FILE" 2>/dev/null || echo "WORKER_URL=${url}" >> "$SECRETS_FILE"
   # shellcheck disable=SC1090
   . "$SECRETS_FILE"
   printf '%s' "$HERMES_GATEWAY_TOKEN" | $WRANGLER secret put HERMES_GATEWAY_TOKEN -c wrangler.staging.toml
   printf '%s' "$SERVICE_AUTH_SECRET"  | $WRANGLER secret put SERVICE_AUTH_SECRET  -c wrangler.staging.toml
-  echo "Deployed. Secrets in $SECRETS_FILE."
+  echo "Deployed at: ${url:-<url-not-parsed>}. Secrets in $SECRETS_FILE."
 }
 
 do_smoke() {
   load_creds
   # shellcheck disable=SC1090
   . "$SECRETS_FILE"
-  local sub url
-  sub="$($WRANGLER whoami 2>/dev/null | grep -oiE '[a-z0-9-]+\.workers\.dev' | head -1)"
-  url="${WORKER_URL:-https://${WORKER_NAME}.${sub}}"
+  local url="${WORKER_URL:-}"
+  if [ -z "$url" ]; then
+    local sub
+    sub="$($WRANGLER whoami 2>/dev/null | grep -oiE '[a-z0-9-]+\.workers\.dev' | head -1)"
+    url="https://${WORKER_NAME}.${sub}"
+  fi
   echo "Smoke against $url"
   WORKER_URL="$url" SERVICE_AUTH_SECRET="$SERVICE_AUTH_SECRET" ./scripts/isolation-smoke.sh
 }
@@ -106,6 +118,12 @@ case "${1:-all}" in
   deploy)   do_deploy ;;
   smoke)    do_smoke ;;
   teardown) do_teardown ;;
-  all)      do_deploy; do_smoke; do_teardown ;;
+  all)
+    set +e
+    do_deploy; drc=$?
+    if [ "$drc" -eq 0 ]; then do_smoke; rc=$?; else rc="$drc"; fi
+    do_teardown              # always tear down, even if deploy/smoke failed
+    exit "$rc"
+    ;;
   *) echo "usage: $0 {deploy|smoke|teardown|all}"; exit 1 ;;
 esac

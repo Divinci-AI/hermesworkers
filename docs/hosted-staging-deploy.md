@@ -3,6 +3,21 @@
 Goal: deploy the hosted (multi-tenant) Worker to a Divinci staging Cloudflare
 account and prove two agents stay isolated with `scripts/isolation-smoke.sh`.
 
+> **✅ PROVEN LIVE (2026-07-17).** `deploy-staging-stub.sh all` deployed the stub
+> to a real account (Cloudflare Containers enabled; DO + container application
+> created), ran the smoke test, and passed: two agents (`agent-…aaaa`,
+> `agent-…bbbb`) each wrote and read back ONLY their own marker (`isolated:true`
+> for both, no cross-read), auth rejected a bad service token (401) and a
+> malformed agent id (400), then the worker was torn down. Per-agent
+> container isolation is confirmed on Cloudflare's platform.
+>
+> **Gotchas hit (all fixed in the script):** (1) the staging file token is
+> expired → script falls back to `wrangler login` OAuth; (2) macOS Docker
+> `osxkeychain` throws `-25299` on registry cred store — clear it with
+> `security delete-internet-password -s registry.cloudflare.com` (a bare
+> `docker logout` is NOT enough); (3) do NOT override `DOCKER_CONFIG` to a fresh
+> dir — it loses buildx and the build fails with `unknown flag: --load`.
+
 ## Prerequisites / blockers to clear first
 
 1. **A real Hermes ref.** The Dockerfile pins `HERMES_VERSION=v2026.4.30`, a
