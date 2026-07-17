@@ -25,6 +25,7 @@ export interface Env {
   ANTHROPIC_API_KEY?: string;
   OPENROUTER_API_KEY?: string;
   OPENAI_API_KEY?: string;
+  GEMINI_API_KEY?: string;
 
   API_TOKEN?: string;
   ADMIN_TOKEN?: string;
@@ -86,5 +87,11 @@ export function collectProviderKeys(env: Env): Record<string, string> {
   if (env.ANTHROPIC_API_KEY) keys.ANTHROPIC_API_KEY = env.ANTHROPIC_API_KEY;
   if (env.OPENROUTER_API_KEY) keys.OPENROUTER_API_KEY = env.OPENROUTER_API_KEY;
   if (env.OPENAI_API_KEY) keys.OPENAI_API_KEY = env.OPENAI_API_KEY;
+  if (env.GEMINI_API_KEY) {
+    // Hermes/litellm read Gemini creds from GEMINI_API_KEY and/or GOOGLE_API_KEY;
+    // set both so `google/…` and `gemini/…` model ids both authenticate.
+    keys.GEMINI_API_KEY = env.GEMINI_API_KEY;
+    keys.GOOGLE_API_KEY = env.GEMINI_API_KEY;
+  }
   return keys;
 }
