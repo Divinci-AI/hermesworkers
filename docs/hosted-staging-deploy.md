@@ -3,13 +3,18 @@
 Goal: deploy the hosted (multi-tenant) Worker to a Divinci staging Cloudflare
 account and prove two agents stay isolated with `scripts/isolation-smoke.sh`.
 
-> **✅ PROVEN LIVE (2026-07-17).** `deploy-staging-stub.sh all` deployed the stub
-> to a real account (Cloudflare Containers enabled; DO + container application
-> created), ran the smoke test, and passed: two agents (`agent-…aaaa`,
-> `agent-…bbbb`) each wrote and read back ONLY their own marker (`isolated:true`
-> for both, no cross-read), auth rejected a bad service token (401) and a
-> malformed agent id (400), then the worker was torn down. Per-agent
-> container isolation is confirmed on Cloudflare's platform.
+> **✅ ISOLATION PROVEN LIVE (2026-07-17).** `deploy-staging-stub.sh all` deployed
+> the stub to a real account (Cloudflare Containers enabled; DO + container
+> application created), ran the smoke test, and passed: two agents each wrote and
+> read back ONLY their own marker (`isolated:true`, no cross-read), auth rejected
+> a bad service token (401) and a malformed agent id (400), then torn down.
+>
+> **✅ FUNCTIONAL PROVEN LIVE (2026-07-17)** against **real Hermes v2026.7.7.2**
+> (`IMAGE_DOCKERFILE=./container/Dockerfile SMOKE_SCRIPT=./scripts/functional-smoke.sh
+> PROVIDER_KEY_OPENAI=… HERMES_MODEL=gpt-4o-mini`): both agents (a) boot the Hermes
+> gateway as the NON-ROOT `hermes` user (`gatewayUser:hermes, nonRoot:true` — the
+> gosu privilege drop works under Sandbox orchestration) and (b) answer chat
+> completions (HTTP 200). Worker + container application torn down clean.
 >
 > **Gotchas hit (all fixed in the script):** (1) the staging file token is
 > expired → script falls back to `wrangler login` OAuth; (2) macOS Docker
