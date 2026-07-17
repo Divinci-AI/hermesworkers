@@ -176,8 +176,14 @@ hosted.all('/hosted/agent/proxy/*', async (c) => {
     return c.json({ error: 'container_not_ready', message: err instanceof Error ? err.message : String(err) }, 503);
   }
 
-  const reqUrl = new URL(c.req.raw.url);
+  const reqUrl = new URL(c.req.raw.url); // pathname already normalized by URL parsing
   const subPath = reqUrl.pathname.replace(/^\/hosted\/agent\/proxy/, '') || '/';
+  // Defense-in-depth: refuse any residual traversal token before forwarding.
+  for (const seg of subPath.split('/')) {
+    let decoded = seg;
+    try { decoded = decodeURIComponent(seg); } catch { return c.json({ error: 'bad_path' }, 400); }
+    if (decoded === '..' || decoded === '.') return c.json({ error: 'bad_path' }, 400);
+  }
   const target = `http://localhost:${HERMES_API_PORT}${subPath}${reqUrl.search}`;
   const method = c.req.raw.method;
 
