@@ -63,6 +63,27 @@ echo "GATEWAY_ALLOW_ALL_USERS=true" >> "$HERMES_ENV_FILE"
 [ -n "${GEMINI_API_KEY:-}" ]     && echo "GEMINI_API_KEY=${GEMINI_API_KEY}"         >> "$HERMES_ENV_FILE" || true
 [ -n "${GOOGLE_API_KEY:-}" ]     && echo "GOOGLE_API_KEY=${GOOGLE_API_KEY}"         >> "$HERMES_ENV_FILE" || true
 [ -n "${NOUS_API_KEY:-}" ]       && echo "NOUS_API_KEY=${NOUS_API_KEY}"             >> "$HERMES_ENV_FILE" || true
+
+# Platform: Cloudflare Workers AI (Divinci-paid). litellm reads both to route
+# `cloudflare/@cf/…` model ids. Passed as a pair by collectProviderKeys().
+[ -n "${CLOUDFLARE_API_KEY:-}" ]    && echo "CLOUDFLARE_API_KEY=${CLOUDFLARE_API_KEY}"       >> "$HERMES_ENV_FILE" || true
+[ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ] && echo "CLOUDFLARE_ACCOUNT_ID=${CLOUDFLARE_ACCOUNT_ID}" >> "$HERMES_ENV_FILE" || true
+
+# Platform: Vertex AI / Gemini (Divinci-paid). litellm reads VERTEXAI_PROJECT +
+# VERTEXAI_LOCATION and the service-account credentials to route `vertex_ai/…`
+# and refreshes the OAuth token itself. The SA JSON arrives inline as
+# VERTEX_SA_JSON (a Worker secret); materialize it to a 0600 file and point
+# GOOGLE_APPLICATION_CREDENTIALS at it — a file path is unambiguous where an
+# inline multi-line JSON blob in a .env line would be fragile to quote.
+[ -n "${VERTEXAI_PROJECT:-}" ]  && echo "VERTEXAI_PROJECT=${VERTEXAI_PROJECT}"   >> "$HERMES_ENV_FILE" || true
+[ -n "${VERTEXAI_LOCATION:-}" ] && echo "VERTEXAI_LOCATION=${VERTEXAI_LOCATION}" >> "$HERMES_ENV_FILE" || true
+if [ -n "${VERTEX_SA_JSON:-}" ]; then
+    VERTEX_SA_FILE="$HOME_DIR/.hermes/vertex-sa.json"
+    printf '%s' "${VERTEX_SA_JSON}" > "$VERTEX_SA_FILE"
+    chmod 600 "$VERTEX_SA_FILE"
+    echo "GOOGLE_APPLICATION_CREDENTIALS=${VERTEX_SA_FILE}" >> "$HERMES_ENV_FILE"
+fi
+
 chmod 600 "$HERMES_ENV_FILE"
 echo "[startup] wrote $HERMES_ENV_FILE ($(wc -l < "$HERMES_ENV_FILE") lines)" >> "$LOG_FILE"
 

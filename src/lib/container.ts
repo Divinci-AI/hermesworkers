@@ -30,6 +30,25 @@ export interface Env {
   // and many proxied models). Without it Hermes' default model 401s.
   NOUS_API_KEY?: string;
 
+  // ── Platform (Divinci-paid) provider creds ────────────────────────────────
+  // Identical for every agent — set once as Worker secrets, not per-request.
+  // litellm routes to these by model-id prefix (`cloudflare/…`, `vertex_ai/…`),
+  // so no header plumbing is needed; the container just needs the creds in env.
+
+  // Cloudflare Workers AI (open models). Divinci's account + a Workers-AI-scoped
+  // API token. litellm reads CLOUDFLARE_API_KEY + CLOUDFLARE_ACCOUNT_ID.
+  CLOUDFLARE_API_KEY?: string;
+  CLOUDFLARE_ACCOUNT_ID?: string;
+
+  // Vertex AI (Gemini). Divinci's GCP project + region + service-account JSON.
+  // litellm mints AND refreshes the OAuth token from the SA JSON, so there is no
+  // token-expiry problem for a long-lived container. VERTEX_SA_JSON is the inline
+  // SA JSON (a wrangler secret); start-hermes.sh materializes it to a file and
+  // points GOOGLE_APPLICATION_CREDENTIALS at it.
+  VERTEXAI_PROJECT?: string;
+  VERTEXAI_LOCATION?: string;
+  VERTEX_SA_JSON?: string;
+
   API_TOKEN?: string;
   ADMIN_TOKEN?: string;
   ALLOW_UNAUTHENTICATED?: string;
@@ -97,6 +116,23 @@ export function collectProviderKeys(env: Env): Record<string, string> {
     keys.GOOGLE_API_KEY = env.GEMINI_API_KEY;
   }
   if (env.NOUS_API_KEY) keys.NOUS_API_KEY = env.NOUS_API_KEY;
+
+  // Platform: Cloudflare Workers AI. Both the token AND the account id are
+  // required by litellm — pass them only as a pair so a half-configured Worker
+  // doesn't advertise a model it can't reach.
+  if (env.CLOUDFLARE_API_KEY && env.CLOUDFLARE_ACCOUNT_ID) {
+    keys.CLOUDFLARE_API_KEY = env.CLOUDFLARE_API_KEY;
+    keys.CLOUDFLARE_ACCOUNT_ID = env.CLOUDFLARE_ACCOUNT_ID;
+  }
+
+  // Platform: Vertex AI (Gemini). Project + location + SA JSON are all required;
+  // pass as a set. start-hermes.sh turns VERTEX_SA_JSON into a credentials file.
+  if (env.VERTEXAI_PROJECT && env.VERTEXAI_LOCATION && env.VERTEX_SA_JSON) {
+    keys.VERTEXAI_PROJECT = env.VERTEXAI_PROJECT;
+    keys.VERTEXAI_LOCATION = env.VERTEXAI_LOCATION;
+    keys.VERTEX_SA_JSON = env.VERTEX_SA_JSON;
+  }
+
   return keys;
 }
 
