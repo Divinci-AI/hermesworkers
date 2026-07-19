@@ -16,7 +16,12 @@ import { Sandbox } from '@cloudflare/sandbox';
  */
 export class HermesInstance extends Sandbox {
   defaultPort = 18789;
-  sleepAfter = '4h';
+  // Idle containers auto-sleep after this window — the primary compute-cost
+  // bound for hosted agents (a container that stops receiving requests costs
+  // nothing while asleep and wakes lazily on the next turn). Tightened from 4h
+  // to 30m for GA cost control; Divinci's dormant-agent sweep reconciles the DB
+  // `status` on top of this. Override per-deploy if a workload needs longer.
+  sleepAfter = '30m';
 
   constructor(ctx: DurableObjectState, env: unknown) {
     // The Sandbox base constructor is typed for a concrete state shape; this DO
