@@ -15,7 +15,7 @@
 FROM docker.io/cloudflare/sandbox:0.12.4
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        iptables gosu curl ca-certificates \
+        iptables gosu sudo curl ca-certificates nodejs \
     && rm -rf /var/lib/apt/lists/*
 
 # Mirror the production users exactly — the uids are what the iptables
@@ -38,6 +38,15 @@ RUN printf 'GEMINI_API_KEY=FAKE-SENTINEL-VALUE\n' > /home/hermes/.hermes/.env \
 RUN mkdir -p /var/log && touch /var/log/hermes-egress.log \
     && chown hermes:hermes /var/log/hermes-egress.log \
     && chmod 0640 /var/log/hermes-egress.log
+
+COPY hermes-term-exec /usr/local/bin/hermes-term-exec
+COPY mcp-terminal-server.js /usr/local/bin/mcp-terminal-server.js
+COPY mcp-probe.js /usr/local/bin/mcp-probe.js
+RUN chmod 0755 /usr/local/bin/hermes-term-exec /usr/local/bin/mcp-terminal-server.js /usr/local/bin/mcp-probe.js \
+    && chown root:root /usr/local/bin/hermes-term-exec /usr/local/bin/mcp-terminal-server.js \
+    && printf 'hermes ALL=(hermes-term) NOPASSWD: /usr/local/bin/hermes-term-exec\n' > /etc/sudoers.d/hermes-term \
+    && chmod 0440 /etc/sudoers.d/hermes-term \
+    && visudo -cf /etc/sudoers.d/hermes-term
 
 COPY egress-guard.js /usr/local/bin/egress-guard.js
 COPY setup-terminal.sh /usr/local/bin/setup-terminal.sh

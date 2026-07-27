@@ -16,7 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         clang make pkg-config libffi-dev libssl-dev \
         ripgrep ffmpeg \
         netcat-openbsd iproute2 \
-        iptables \
+        iptables sudo \
     && rm -rf /var/lib/apt/lists/*
 
 # Non-root runtime user for the Hermes agent. The agent executes tools/shell
@@ -129,6 +129,27 @@ RUN sed -i 's/\r$//' /usr/local/bin/start-hermes.sh && chmod 0755 /usr/local/bin
 # lockdown script that makes it unbypassable. Both are root-owned and
 # non-writable by either runtime user — the terminal user must not be able to
 # edit the thing that contains it.
+# The bounded terminal, exposed to the Hermes agent as an MCP server.
+#
+# The sudoers grant is deliberately narrow: the `hermes` user may run exactly
+# ONE program as `hermes-term`, by absolute path. That is "run this program",
+# not "become that user". Both the helper and the MCP server are root-owned and
+# not writable by either runtime user, so the thing being granted cannot be
+# swapped out by the thing receiving the grant.
+#
+# The escalation runs DOWNWARD (uid 10001 -> 10002, dropping the ability to read
+# ~/.hermes/), which is what makes it safe: `hermes` gains nothing it did not
+# already have, and everything it runs through the helper is confined by the
+# terminal boundary rather than by its own uid.
+COPY hermes-term-exec /usr/local/bin/hermes-term-exec
+COPY mcp-terminal-server.js /usr/local/bin/mcp-terminal-server.js
+RUN sed -i 's/\r$//' /usr/local/bin/hermes-term-exec \
+    && chmod 0755 /usr/local/bin/hermes-term-exec /usr/local/bin/mcp-terminal-server.js \
+    && chown root:root /usr/local/bin/hermes-term-exec /usr/local/bin/mcp-terminal-server.js \
+    && printf 'hermes ALL=(hermes-term) NOPASSWD: /usr/local/bin/hermes-term-exec\n' > /etc/sudoers.d/hermes-term \
+    && chmod 0440 /etc/sudoers.d/hermes-term \
+    && visudo -cf /etc/sudoers.d/hermes-term
+
 COPY egress-guard.js /usr/local/bin/egress-guard.js
 COPY setup-terminal.sh /usr/local/bin/setup-terminal.sh
 RUN sed -i 's/\r$//' /usr/local/bin/setup-terminal.sh \

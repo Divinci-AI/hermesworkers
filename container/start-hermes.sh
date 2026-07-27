@@ -130,6 +130,36 @@ hermes config set approvals.cron_mode deny || true
 # the above entirely.
 hermes config set command_allowlist "[]" || true
 
+# ── Give the agent the BOUNDED terminal via MCP ────────────────────────────
+# Hermes' own command execution is disabled above because it runs as the
+# credential-owning uid. That would leave the agent unable to run anything at
+# all, so register the bounded terminal as an MCP server instead: same
+# capability, routed THROUGH the security boundary rather than around it.
+#
+# Every tool it exposes executes as hermes-term (uid 10002) via the narrow
+# sudo grant — a user that cannot read ~/.hermes/, starts from an empty
+# environment, and whose egress is REJECTed except through the guard.
+#
+# Gated on HERMES_TERMINAL_ENABLED so a deployment that has not established the
+# boundary (setup-terminal.sh not run, or NET_ADMIN unavailable) does not
+# advertise tools that would fail on every call.
+if [ "${HERMES_TERMINAL_ENABLED:-false}" = "true" ]; then
+  MCP_CFG="$HOME_DIR/.hermes/mcp-terminal.yaml"
+  cat > "$MCP_CFG" <<'MCPEOF'
+mcp_servers:
+  divinci_terminal:
+    command: "node"
+    args: ["/usr/local/bin/mcp-terminal-server.js"]
+    enabled: true
+    timeout: 620
+MCPEOF
+  # `hermes mcp add` is interactive; write the config and let Hermes merge it.
+  hermes config set mcp_servers.divinci_terminal.command node || true
+  hermes config set mcp_servers.divinci_terminal.args '["/usr/local/bin/mcp-terminal-server.js"]' || true
+  hermes config set mcp_servers.divinci_terminal.enabled true || true
+  echo "[startup] registered divinci_terminal MCP server (bounded terminal)" >> "$LOG_FILE"
+fi
+
 # Optional defense in depth: drop the .env after the gateway is up, so even a
 # regression in the approval config finds nothing to read.
 #

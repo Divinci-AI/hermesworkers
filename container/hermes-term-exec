@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+#
+# hermes-term-exec — the ONLY thing the `hermes` user may run as `hermes-term`.
+#
+# Referenced by /etc/sudoers.d/hermes-term as an exact path, so the sudo grant is
+# "run this one program", not "become that user". The program itself is
+# root-owned and not writable by either runtime user, so the thing being granted
+# cannot be swapped out by the thing receiving the grant.
+#
+# WHY A SUDO HOP AT ALL
+# The Hermes agent process runs as `hermes` (uid 10001), which OWNS
+# ~/.hermes/ and therefore the provider credentials. Its built-in command
+# execution is disabled for exactly that reason (see start-hermes.sh). To give
+# the agent a terminal that is actually safe, commands must run as
+# `hermes-term` (uid 10002) — a strictly LESS privileged user that cannot read
+# those credentials and whose egress is REJECTed by iptables except through the
+# allowlisting guard.
+#
+# The escalation direction is downward, which is what makes this safe: `hermes`
+# gains nothing it did not already have, and everything it runs through here is
+# confined by the terminal boundary rather than by its own uid.
+#
+# Usage: hermes-term-exec <command-string> [workdir]
+set -uo pipefail
+
+COMMAND="${1:-}"
+WORKDIR="${2:-/workspace}"
+WORKSPACE_ROOT=/workspace
+PROXY="http://127.0.0.1:${EGRESS_PROXY_PORT:-3128}"
+
+if [ -z "$COMMAND" ]; then
+  echo "hermes-term-exec: a command is required" >&2
+  exit 2
+fi
+
+# Confine the working directory here as well as at the API layer. This script is
+# reachable from inside the container, so it must not rely on a caller further
+# up the stack having validated its arguments.
+case "$WORKDIR" in
+  "$WORKSPACE_ROOT"|"$WORKSPACE_ROOT"/*) : ;;
+  *) WORKDIR="$WORKSPACE_ROOT" ;;
+esac
+case "$WORKDIR" in
+  *..*) WORKDIR="$WORKSPACE_ROOT" ;;
+esac
+
+cd "$WORKDIR" 2>/dev/null || cd "$WORKSPACE_ROOT" || exit 1
+
+# `env -i` for the same reason it is used on the Worker path: an inherited
+# environment is how credentials leak into a process that should not see them.
+# sudo's env_reset already strips most of it; starting from empty removes the
+# question entirely.
+exec env -i \
+  PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+  HOME="$WORKSPACE_ROOT" \
+  LANG=C.UTF-8 \
+  LC_ALL=C.UTF-8 \
+  TERM=dumb \
+  HTTP_PROXY="$PROXY" \
+  HTTPS_PROXY="$PROXY" \
+  http_proxy="$PROXY" \
+  https_proxy="$PROXY" \
+  NO_PROXY=127.0.0.1,localhost \
+  no_proxy=127.0.0.1,localhost \
+  DO_NOT_TRACK=1 \
+  npm_config_fund=false \
+  npm_config_audit=false \
+  bash -lc "$COMMAND"
