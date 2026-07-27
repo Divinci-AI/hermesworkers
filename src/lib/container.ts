@@ -63,6 +63,13 @@ export interface Env {
 
   CHAT_RATE_LIMITER?: RateLimit;
   ADMIN_RATE_LIMITER?: RateLimit;
+
+  // ── Virtual terminal ──────────────────────────────────────────────────────
+  // Comma-separated egress allowlist for terminal commands (exact host or
+  // dot-anchored suffix). Unset ⇒ DEFAULT_EGRESS_ALLOWLIST in lib/terminal.ts
+  // (package registries + forges). An EMPTY string is a valid deny-all posture,
+  // NOT "allow everything" — the guard fails closed by design.
+  EGRESS_ALLOWED_HOSTS?: string;
 }
 
 /**

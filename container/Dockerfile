@@ -1,4 +1,4 @@
-FROM docker.io/cloudflare/sandbox:0.7.20
+FROM docker.io/cloudflare/sandbox:0.12.4
 LABEL org.opencontainers.image.title="hermesworkers"
 LABEL org.opencontainers.image.description="Hermes Agent running inside Cloudflare Sandbox"
 LABEL org.opencontainers.image.licenses="Apache-2.0"
@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         clang make pkg-config libffi-dev libssl-dev \
         ripgrep ffmpeg \
         netcat-openbsd iproute2 \
+        iptables \
     && rm -rf /var/lib/apt/lists/*
 
 # Non-root runtime user for the Hermes agent. The agent executes tools/shell
@@ -24,6 +25,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # reproducible snapshot ownership.
 RUN groupadd --system --gid 10001 hermes \
     && useradd --system --uid 10001 --gid hermes --home-dir /home/hermes --shell /usr/sbin/nologin hermes
+
+# SEPARATE, LESS-PRIVILEGED user for the virtual terminal (uid 10002).
+#
+# The terminal runs commands the model composes from untrusted input — a cloned
+# repo's README is a prompt-injection vector. It therefore must NOT share the
+# identity that owns the provider credentials: ~hermes/.hermes/ holds the Vertex
+# service-account JSON, the Cloudflare API key, and any customer BYOK key, and
+# `cat ~/.hermes/.env` is the first thing an injection reaches for once
+# arbitrary commands are possible.
+#
+# uid 10002 is also the handle the network lockdown hangs off — setup-terminal.sh
+# installs iptables owner-match rules against it so all egress from terminal
+# commands must transit the allowlisting guard. Keep the uid stable; the rules,
+# the workspace ownership, and the Worker's gosu wrapper all reference it.
+RUN groupadd --system --gid 10002 hermes-term \
+    && useradd --system --uid 10002 --gid hermes-term --home-dir /workspace --shell /bin/bash hermes-term \
+    && mkdir -p /workspace \
+    && chown hermes-term:hermes-term /workspace \
+    && chmod 0750 /workspace
 
 # Node.js 22 — Hermes install scripts bootstrap Node, pre-installing avoids a
 # download at build time. The tarball is fetched over TLS *with* certificate
@@ -85,12 +105,30 @@ RUN /opt/hermes-venv/bin/hermes dashboard --help > /dev/null 2>&1 \
 COPY start-hermes.sh /usr/local/bin/start-hermes.sh
 RUN sed -i 's/\r$//' /usr/local/bin/start-hermes.sh && chmod 0755 /usr/local/bin/start-hermes.sh
 
+# Virtual-terminal boundary: the allowlisting egress proxy and the boot-time
+# lockdown script that makes it unbypassable. Both are root-owned and
+# non-writable by either runtime user — the terminal user must not be able to
+# edit the thing that contains it.
+COPY egress-guard.js /usr/local/bin/egress-guard.js
+COPY setup-terminal.sh /usr/local/bin/setup-terminal.sh
+RUN sed -i 's/\r$//' /usr/local/bin/setup-terminal.sh \
+    && chmod 0755 /usr/local/bin/setup-terminal.sh /usr/local/bin/egress-guard.js \
+    && chown root:root /usr/local/bin/setup-terminal.sh /usr/local/bin/egress-guard.js
+RUN mkdir -p /var/log && touch /var/log/hermes-egress.log \
+    && chown hermes:hermes /var/log/hermes-egress.log \
+    && chmod 0640 /var/log/hermes-egress.log
+
 # Hand the Hermes state + install trees to the non-root user. The a+rX keeps the
 # (non-secret) install tree readable for the Sandbox snapshot; runtime secrets
 # under ~/.hermes are created 0700 by start-hermes.sh, so no secret is ever
 # world-readable.
 RUN chown -R hermes:hermes /home/hermes /opt/hermes-agent /opt/hermes-venv \
-    && chmod -R a+rX /opt/hermes-agent /opt/hermes-venv
+    && chmod -R a+rX /opt/hermes-agent /opt/hermes-venv \
+    # 0711 lets the terminal user traverse into world-readable subpaths without
+    # being able to LIST /home/hermes — combined with 0700 on ~/.hermes (set by
+    # start-hermes.sh and re-asserted by setup-terminal.sh), the credential
+    # directory is neither listable nor readable from uid 10002.
+    && chmod 0711 /home/hermes
 
 WORKDIR /home/hermes
 

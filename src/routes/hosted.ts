@@ -17,6 +17,7 @@ import {
 } from '../lib/tenant';
 import { withRetry } from '../lib/resilience';
 import { ensureGateway, HERMES_API_PORT, killGateway } from '../services/container-lifecycle';
+import { terminal } from './terminal';
 
 type HostedCtx = { Bindings: Env; Variables: { agentId: string } };
 
@@ -269,5 +270,14 @@ hosted.post('/hosted/agent/v1/chat/completions', async (c) => {
     return c.json({ error: 'gateway_error', message: err instanceof Error ? err.message : String(err) }, 502);
   }
 });
+
+/**
+ * Virtual-terminal routes are mounted INTO this app rather than registered
+ * separately on the root app, so they inherit the `/hosted/*` service-auth
+ * middleware above (and its validated agentId) instead of needing a second,
+ * independently-maintained copy of the gate. A terminal reachable without
+ * service auth would be a remote code-execution endpoint on the open internet.
+ */
+hosted.route('/', terminal);
 
 export { hosted };
