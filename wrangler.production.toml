@@ -1,0 +1,92 @@
+# hermesworkers — Cloudflare Workers configuration template.
+#
+# Replace the placeholders below before your first `wrangler deploy`:
+#   - <YOUR_WORKER_NAME>             unique Worker name in your account
+#   - <YOUR_ACCOUNT_ID>              from `wrangler whoami` or the Cloudflare dashboard
+#
+# Optional placeholders for the custom-domain mode (see docs/custom-domain.md):
+#   - <YOUR_DASHBOARD_HOSTNAME>      e.g. hermes.example.com (Worker Route)
+
+name = "divinci-hermes-production"
+main = "src/index.ts"
+compatibility_date = "2026-05-01"
+compatibility_flags = ["nodejs_compat"]
+account_id = "14a6fa23390363382f378b5bd4a0f849"
+
+# Allow the Worker to receive WebSocket upgrades (Hermes dashboard live updates).
+[observability]
+enabled = true
+
+# ─── Virtual terminal: egress allowlist ─────────────────────────────
+# Hosts the terminal user may reach, comma-separated (exact host or
+# dot-anchored suffix: "github.com" also matches "codeload.github.com" but
+# NOT "github.com.attacker.net"). Everything else is REJECTed by iptables.
+#
+# An EMPTY value is a valid deny-all posture, NOT "allow everything" — the
+# guard fails closed by design. Unset falls back to DEFAULT_EGRESS_ALLOWLIST
+# in src/lib/terminal.ts (package registries + forges).
+[vars]
+EGRESS_ALLOWED_HOSTS = "github.com,codeload.github.com,objects.githubusercontent.com,raw.githubusercontent.com,gitlab.com,registry.npmjs.org,pypi.org,files.pythonhosted.org,crates.io,static.crates.io,proxy.golang.org"
+
+# ─── Durable Object that owns the Hermes container ──────────────────
+[[durable_objects.bindings]]
+name = "HERMES"
+class_name = "HermesInstance"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["HermesInstance"]
+
+# ─── Cloudflare Sandbox container image (built from container/Dockerfile) ──
+[[containers]]
+class_name = "HermesInstance"
+image = "./container/Dockerfile"
+max_instances = 10
+instance_type = "standard-1"
+
+# ─── Rate limiting (optional but recommended) ──────────────────────
+# Native rate-limit bindings. If omitted, the Worker still runs — rate limiting
+# is defense-in-depth, not a hard dependency. `namespace_id` is an arbitrary
+# per-binding integer (string) unique within this Worker.
+[[unsafe.bindings]]
+name = "CHAT_RATE_LIMITER"
+type = "ratelimit"
+namespace_id = "1001"
+simple = { limit = 60, period = 60 }   # 60 chat/proxy requests per minute per IP
+
+[[unsafe.bindings]]
+name = "ADMIN_RATE_LIMITER"
+type = "ratelimit"
+namespace_id = "1002"
+simple = { limit = 10, period = 60 }   # 10 control-plane requests per minute per IP
+
+# ─── Optional: Worker Route for the dashboard subdomain ─────────────
+# Uncomment and edit if you wire a custom domain (see docs/custom-domain.md).
+# routes = [
+#   { pattern = "<YOUR_DASHBOARD_HOSTNAME>/*", custom_domain = true }
+# ]
+
+# ─── Required secrets (set with `wrangler secret put <NAME>`) ──────
+# At least one of the three provider keys is required:
+#   ANTHROPIC_API_KEY    Anthropic Claude access
+#   OPENROUTER_API_KEY   OpenRouter (multi-provider routing)
+#   OPENAI_API_KEY       OpenAI (GPT models)
+#
+#   HERMES_GATEWAY_TOKEN Shared secret between the Worker and the in-container
+#                        Hermes API server. REQUIRED — the container refuses to
+#                        boot an unauthenticated gateway. `openssl rand -hex 32`.
+#   API_TOKEN            Caller bearer token for /v1/* and /api/* (chat level).
+#                        REQUIRED unless ALLOW_UNAUTHENTICATED=true. `openssl rand -hex 32`.
+#
+# Optional:
+#   ADMIN_TOKEN          Separate bearer token gating destructive control routes
+#                        (restart / restart-gateway / stop / logs). If unset,
+#                        those routes fall back to requiring API_TOKEN. Set this
+#                        to keep chat clients from being able to restart/stop the
+#                        instance or read logs. `openssl rand -hex 32`.
+#   ALLOW_UNAUTHENTICATED  Set to "true" ONLY for local/private dev to run an open
+#                        Worker. In its absence, protected routes fail closed (503)
+#                        when no token is configured.
+#   HERMES_DEFAULT_MODEL Override Hermes' default model id, e.g. `anthropic/claude-sonnet-4-5`
+#   DASHBOARD_HOSTNAME   Hostname to proxy to the native dashboard (see docs/custom-domain.md).
+#                        Gated at the chat level with the same fail-closed semantics.
