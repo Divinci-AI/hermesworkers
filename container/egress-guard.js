@@ -74,7 +74,23 @@ function audit(decision, host, port, extra) {
   // file the Worker can read back for support/abuse investigation.
   console.log(`[egress] ${line}`);
   try {
-    if (!auditStream) auditStream = fs.createWriteStream(AUDIT_LOG, { flags: "a" });
+    if (!auditStream) {
+      auditStream = fs.createWriteStream(AUDIT_LOG, { flags: "a" });
+      // A stream error (EACCES on the log file, disk full) is emitted
+      // ASYNCHRONOUSLY as an 'error' event — a try/catch around the write
+      // cannot see it, and an unhandled 'error' event terminates the process.
+      // That is exactly what happened the first time this was exercised in a
+      // container: the guard died on the first request and every proxied
+      // connection failed with "Proxy CONNECT aborted".
+      //
+      // The guard must survive its own logging failing. Audit is valuable but
+      // it is NOT the security control — the iptables rules are — so degrade to
+      // stdout-only rather than taking the whole boundary down with us.
+      auditStream.on("error", (err) => {
+        console.error(`[egress] audit log unavailable (${err.message}); continuing stdout-only`);
+        auditStream = null;
+      });
+    }
     auditStream.write(`${line}\n`);
   } catch {
     // Never let audit failure break or block the request path.
