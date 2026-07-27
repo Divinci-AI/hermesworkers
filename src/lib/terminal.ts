@@ -27,6 +27,7 @@ const SETUP_SCRIPT = '/usr/local/bin/setup-terminal.sh';
 export const WORKSPACE_ROOT = '/workspace';
 export const TERMINAL_USER = 'hermes-term';
 export const EGRESS_PROXY_PORT = 3128;
+export const PROXY_HOST = '127.0.0.1';
 
 /**
  * Default egress allowlist: the package registries and forges a build actually
@@ -195,6 +196,110 @@ export function buildTerminalCommand(command: string, cwd?: string): string {
     `cd ${shellQuote(workdir)} 2>/dev/null || cd ${shellQuote(WORKSPACE_ROOT)}; ` +
     `exec gosu ${TERMINAL_USER} env -i ${env} bash -lc ${shellQuote(command)}`
   );
+}
+
+/**
+ * Google API hosts the Workspace CLI needs.
+ *
+ * These are added to the egress allowlist for the WHOLE container when the
+ * Workspace feature is enabled for it (HERMES_WORKSPACE_CLI_ENABLED), not
+ * per-command: the guard is a long-running process that reads its allowlist
+ * once at boot, so there is no honest way to narrow it to the duration of a
+ * single invocation.
+ *
+ * That is a real widening, so it is opt-in and off by default. An agent with
+ * the Workspace feature enabled can reach googleapis.com from any command, not
+ * just from `gws` — the thing that stops that being an open exfiltration
+ * channel is that reaching an authenticated Google endpoint still requires a
+ * token, and tokens are injected per-command and never persisted.
+ */
+export const WORKSPACE_EGRESS_HOSTS = [
+  'googleapis.com',
+  'oauth2.googleapis.com',
+  'www.googleapis.com',
+].join(',');
+
+/**
+ * Build a `gws` invocation with a short-lived OAuth access token.
+ *
+ * The token is the customer's own Workspace credential, so it is handled more
+ * carefully than ordinary command input:
+ *
+ *  - It is passed via the environment, NOT on the command line. Argv is visible
+ *    to every process in the container through /proc/<pid>/cmdline; the
+ *    environment of a process is only readable by its own uid.
+ *  - It is scoped to ONE command. Nothing is written to
+ *    ~/.config/gws/credentials.json, so it cannot outlive the invocation or be
+ *    picked up by a later command.
+ *  - `set +x` guards against the shell echoing it if tracing is ever enabled.
+ *
+ * Note the egress allowlist is doing real work here too: even if a prompt
+ * injection in a cloned repo convinced the agent to exfiltrate this token, it
+ * has nowhere to send it — outbound traffic is REJECTed except to the
+ * allowlisted hosts.
+ */
+export function buildWorkspaceCommand(args: string, accessToken: string, cwd?: string): string {
+  if (!accessToken || typeof accessToken !== 'string') {
+    throw new TerminalBoundaryError('a Google Workspace access token is required');
+  }
+  // Restrict to the characters a real OAuth 2.0 bearer token can contain
+  // (RFC 6750 token68: ALPHA / DIGIT / "-" / "." / "_" / "~" / "+" / "/" / "=").
+  // Deliberately narrower than "any printable ASCII": quotes and backslashes
+  // have no business in a token, and the value is interpolated into a generated
+  // shell script. shellQuote would neutralize them anyway — this is the second
+  // lock, so a future refactor that drops the quoting does not become a hole.
+  if (!/^[A-Za-z0-9._~+/=-]+$/.test(accessToken)) {
+    throw new TerminalBoundaryError('malformed Google Workspace access token');
+  }
+  const workdir = cwd ? resolveWorkspacePath(cwd) : WORKSPACE_ROOT;
+  const proxy = `http://${PROXY_HOST}:${EGRESS_PROXY_PORT}`;
+
+  const env = [
+    'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+    `HOME=${WORKSPACE_ROOT}`,
+    'LANG=C.UTF-8',
+    'LC_ALL=C.UTF-8',
+    `HTTP_PROXY=${proxy}`,
+    `HTTPS_PROXY=${proxy}`,
+    `http_proxy=${proxy}`,
+    `https_proxy=${proxy}`,
+    'NO_PROXY=127.0.0.1,localhost',
+    'no_proxy=127.0.0.1,localhost',
+    `GOOGLE_WORKSPACE_CLI_TOKEN=${accessToken}`,
+  ].map(shellQuote).join(' ');
+
+  return (
+    `set +x; cd ${shellQuote(workdir)} 2>/dev/null || cd ${shellQuote(WORKSPACE_ROOT)}; ` +
+    `exec gosu ${TERMINAL_USER} env -i ${env} gws ${args}`
+  );
+}
+
+/**
+ * Validate the argument string for a `gws` invocation.
+ *
+ * Unlike `exec`, this is NOT a general shell: the arguments are appended after
+ * `gws`, so shell metacharacters would let a caller chain a second command that
+ * inherits the OAuth token in its environment. That is the one place where
+ * input filtering IS the right control, because the surface is a fixed binary
+ * rather than an arbitrary shell.
+ */
+const GWS_ARG_PATTERN = /^[A-Za-z0-9 _\-./:@=,'"?&+*[\]{}#]+$/;
+
+export function validateWorkspaceArgs(args: string): string {
+  const a = String(args ?? '').trim();
+  if (!a) throw new TerminalBoundaryError('workspace command arguments are required');
+  if (a.length > 4_000) throw new TerminalBoundaryError('workspace command is too long');
+  // Explicitly reject the metacharacters that could start a new command or
+  // capture output, before the permissive allowlist below.
+  if (/[;&|`$<>\\\n\r()]/.test(a)) {
+    throw new TerminalBoundaryError(
+      'workspace command arguments may not contain shell metacharacters',
+    );
+  }
+  if (!GWS_ARG_PATTERN.test(a)) {
+    throw new TerminalBoundaryError('workspace command arguments contain unsupported characters');
+  }
+  return a;
 }
 
 /** Cap on captured output per stream, so one command can't blow the response. */

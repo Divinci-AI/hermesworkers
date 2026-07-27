@@ -70,6 +70,11 @@ export interface Env {
   // (package registries + forges). An EMPTY string is a valid deny-all posture,
   // NOT "allow everything" — the guard fails closed by design.
   EGRESS_ALLOWED_HOSTS?: string;
+
+  // Google Workspace CLI (`gws`). Off unless explicitly "true". Enabling it
+  // widens the container's egress allowlist to Google API hosts, so it is an
+  // opt-in per deployment rather than a default.
+  HERMES_WORKSPACE_CLI_ENABLED?: string;
 }
 
 /**

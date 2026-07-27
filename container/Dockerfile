@@ -63,6 +63,26 @@ RUN ARCH="$(dpkg --print-architecture)" \
     && rm /tmp/node.tar.xz \
     && node --version
 
+# Google Workspace CLI (`gws`) — one binary for Drive, Gmail, Calendar, Sheets,
+# Docs, Chat and Admin, built dynamically from Google's Discovery Service, with
+# structured JSON output. Available to the virtual terminal.
+#
+# PINNED for supply-chain safety, like Node and Hermes above: this binary is
+# handed short-lived OAuth tokens for a customer's Google Workspace account, so
+# an unpinned floating version is not acceptable. Bump deliberately.
+#
+# It is open source but explicitly NOT an officially supported Google product —
+# worth remembering before promising customers a Google SLA on top of it.
+#
+# Auth is per-command via GOOGLE_WORKSPACE_CLI_TOKEN (first in the CLI's
+# credential resolution order). No credential file is ever written into the
+# image or the workspace: the token is injected for the duration of one command
+# and never persisted. See buildWorkspaceCommand() in src/lib/terminal.ts.
+ENV GWS_VERSION=0.22.5
+RUN npm install -g "@googleworkspace/cli@${GWS_VERSION}" \
+    && gws --version \
+    && npm cache clean --force
+
 # Pin HOME so Cloudflare Sandbox snapshot/backup catches Hermes state under ~/.hermes.
 ENV HOME=/home/hermes
 RUN mkdir -p /home/hermes

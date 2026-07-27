@@ -30,6 +30,9 @@ import {
   resolveWorkspacePath,
   shellQuote,
   truncateOutput,
+  buildWorkspaceCommand,
+  validateWorkspaceArgs,
+  WORKSPACE_EGRESS_HOSTS,
 } from '../lib/terminal';
 
 type TerminalCtx = { Bindings: Env; Variables: { agentId: string } };
@@ -49,8 +52,12 @@ interface ExecLike {
 }
 
 function allowlistFor(env: Env): string {
-  return (env as unknown as { EGRESS_ALLOWED_HOSTS?: string }).EGRESS_ALLOWED_HOSTS
+  const base = (env as unknown as { EGRESS_ALLOWED_HOSTS?: string }).EGRESS_ALLOWED_HOSTS
     || DEFAULT_EGRESS_ALLOWLIST;
+  // Google API hosts are added for the whole container, and only when the
+  // Workspace feature is enabled — see WORKSPACE_EGRESS_HOSTS for why this
+  // cannot honestly be scoped to a single command.
+  return env.HERMES_WORKSPACE_CLI_ENABLED === 'true' ? `${base},${WORKSPACE_EGRESS_HOSTS}` : base;
 }
 
 /**
@@ -338,6 +345,85 @@ terminal.post('/hosted/agent/terminal/expose-port', async (c) => {
       exposePort(p: number, o: Record<string, unknown>): Promise<{ url?: string }>;
     }).exposePort(port, { name: `agent-${agentId}-${port}` });
     return c.json({ ok: true, agentId, port, url: exposed?.url ?? null });
+  } catch (err) {
+    return boundaryFailure(c, err);
+  }
+});
+
+// ── Google Workspace CLI ───────────────────────────────────────────────────
+/**
+ * Run a `gws` command against the caller's Google Workspace account.
+ *
+ * The OAuth access token arrives in the X-Workspace-Token HEADER, never in the
+ * body or URL: bodies get logged by intermediaries and URLs end up in access
+ * logs and referrers. Divinci mints it per-request from the customer's stored
+ * refresh token; it is short-lived, scoped to that user, injected into the
+ * command's environment for one invocation, and never written to disk (no
+ * ~/.config/gws/credentials.json is created).
+ *
+ * Argument validation IS the right control here, unlike `exec`: the surface is
+ * a fixed binary rather than an arbitrary shell, so a shell metacharacter in
+ * the arguments would let a caller chain a second command that inherits the
+ * OAuth token from the environment.
+ */
+terminal.post('/hosted/agent/terminal/workspace', async (c) => {
+  const agentId = c.var.agentId;
+
+  if (c.env.HERMES_WORKSPACE_CLI_ENABLED !== 'true') {
+    return c.json(
+      { error: 'workspace_cli_disabled', message: 'The Google Workspace CLI is not enabled for this deployment.' },
+      404,
+    );
+  }
+
+  const token = c.req.header('x-workspace-token') ?? '';
+  if (!token) {
+    return c.json(
+      { error: 'bad_request', message: 'X-Workspace-Token header is required (a Google OAuth access token)' },
+      400,
+    );
+  }
+
+  let body: { args?: string; cwd?: string; timeoutMs?: number };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'bad_request', message: 'body must be JSON' }, 400);
+  }
+
+  let args: string;
+  try {
+    args = validateWorkspaceArgs(body.args ?? '');
+  } catch (err) {
+    return c.json({ error: 'bad_request', message: err instanceof Error ? err.message : String(err) }, 400);
+  }
+
+  const container = getContainerForAgent(c.env, agentId);
+  try {
+    await ensureTerminalBoundary(container, agentId, allowlistFor(c.env));
+    const timeout = Math.min(Math.max(body.timeoutMs ?? DEFAULT_TIMEOUT_MS, 1_000), MAX_TIMEOUT_MS);
+    const wrapped = buildWorkspaceCommand(args, token, body.cwd);
+
+    const result = await withRetry<{ stdout?: string; stderr?: string; exitCode?: number }>(
+      () => (container as unknown as ExecLike).exec(wrapped, { timeout }),
+      // Never retry: a Workspace call can create a draft, an event, or a file.
+      // Re-running because the first attempt looked flaky duplicates real
+      // side effects in a customer's account.
+      { attempts: 1, timeoutMs: timeout + 15_000, isRetryable: () => false, label: `gws:${agentId}` },
+    );
+
+    const out = truncateOutput(result.stdout);
+    const err = truncateOutput(result.stderr);
+    return c.json({
+      ok: (result.exitCode ?? 0) === 0,
+      agentId,
+      // Echo the ARGS, never the token.
+      args,
+      stdout: out.text,
+      stderr: err.text,
+      exitCode: result.exitCode ?? 0,
+      truncated: out.truncated || err.truncated,
+    });
   } catch (err) {
     return boundaryFailure(c, err);
   }
