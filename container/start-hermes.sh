@@ -84,6 +84,22 @@ if [ -n "${VERTEX_SA_JSON:-}" ]; then
     echo "GOOGLE_APPLICATION_CREDENTIALS=${VERTEX_SA_FILE}" >> "$HERMES_ENV_FILE"
 fi
 
+# Per-agent Slack Socket Mode config (written by public-api via
+# POST /hosted/agent/platforms/slack). Durable across sleep/wake — startProcess
+# env only carries platform/BYOK keys, so Slack tokens live in this side file
+# and are merged here on every boot. Private org channels use G… ids in
+# SLACK_ALLOWED_CHANNELS.
+SLACK_PLATFORM_ENV="$HOME_DIR/.hermes/divinci-platforms/slack.env"
+if [ -f "$SLACK_PLATFORM_ENV" ]; then
+    # Drop any stale SLACK_* lines first, then append the durable file.
+    # (Rebuild above never writes SLACK_*; this is belt-and-braces for a
+    # previous soft-merge that left keys in the live .env.)
+    grep -vE '^SLACK_' "$HERMES_ENV_FILE" > "${HERMES_ENV_FILE}.noslack" 2>/dev/null || cp "$HERMES_ENV_FILE" "${HERMES_ENV_FILE}.noslack"
+    cat "${HERMES_ENV_FILE}.noslack" "$SLACK_PLATFORM_ENV" > "$HERMES_ENV_FILE"
+    rm -f "${HERMES_ENV_FILE}.noslack"
+    echo "[startup] merged Slack platform env from $SLACK_PLATFORM_ENV" >> "$LOG_FILE"
+fi
+
 chmod 600 "$HERMES_ENV_FILE"
 echo "[startup] wrote $HERMES_ENV_FILE ($(wc -l < "$HERMES_ENV_FILE") lines)" >> "$LOG_FILE"
 

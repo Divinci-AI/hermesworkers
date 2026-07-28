@@ -16,7 +16,8 @@ import {
   SERVICE_AGENT_HEADER,
 } from '../lib/tenant';
 import { withRetry } from '../lib/resilience';
-import { ensureGateway, HERMES_API_PORT, killGateway } from '../services/container-lifecycle';
+import { ensureGateway, HERMES_API_PORT, killGateway, restartGateway } from '../services/container-lifecycle';
+import { parseSlackApplyBody, buildSlackApplyShell } from '../lib/slack-platform';
 import { terminal } from './terminal';
 
 type HostedCtx = { Bindings: Env; Variables: { agentId: string } };
@@ -269,6 +270,114 @@ hosted.post('/hosted/agent/v1/chat/completions', async (c) => {
   } catch (err) {
     return c.json({ error: 'gateway_error', message: err instanceof Error ? err.message : String(err) }, 502);
   }
+});
+
+/**
+ * Apply Slack Socket Mode config for this agent (private-channel ready).
+ *
+ * Called by Divinci public-api after saving encrypted tokens on the HermesAgent
+ * record. Writes a durable `~/.hermes/divinci-platforms/slack.env` that
+ * start-hermes.sh merges into Hermes' .env on every cold boot, then restarts
+ * the gateway so the Socket Mode adapter connects with the new tokens.
+ *
+ * Body shape (HermesSlackApplyPayload from public-api):
+ *   { enabled, botToken?, appToken?, allowedUsers, allowedChannels,
+ *     freeResponseChannels, homeChannel?, homeChannelName?,
+ *     replyInThread, requireMention }
+ */
+hosted.post('/hosted/agent/platforms/slack', async (c) => {
+  const agentId = c.var.agentId;
+  let raw: unknown;
+  try {
+    raw = await c.req.json();
+  } catch {
+    return c.json({ error: 'invalid_json', message: 'body must be JSON' }, 400);
+  }
+
+  const parsed = parseSlackApplyBody(raw);
+  if (!parsed.ok) {
+    return c.json({ error: 'invalid_body', message: parsed.error }, parsed.status);
+  }
+
+  const container = getContainerForAgent(c.env, agentId);
+
+  let gatewayToken: string;
+  try {
+    gatewayToken = requireGatewayToken(c.env);
+  } catch (err) {
+    return c.json(
+      { error: 'server_misconfigured', message: err instanceof Error ? err.message : String(err) },
+      503,
+    );
+  }
+
+  const shell = buildSlackApplyShell(parsed.body);
+  try {
+    const result = await withRetry<{ stdout?: string; stderr?: string; exitCode?: number }>(
+      () => (container as any).exec(shell, { timeout: 60_000 }),
+      { attempts: 2, timeoutMs: 90_000, label: `slack-write:${agentId}` },
+    );
+    if (result?.exitCode && result.exitCode !== 0) {
+      return c.json(
+        {
+          ok: false,
+          agentId,
+          error: 'write_failed',
+          message: (result.stderr || result.stdout || 'non-zero exit').toString().substring(0, 400),
+        },
+        502,
+      );
+    }
+  } catch (err) {
+    return c.json(
+      {
+        ok: false,
+        agentId,
+        error: 'write_failed',
+        message: err instanceof Error ? err.message : String(err),
+      },
+      502,
+    );
+  }
+
+  // Restart gateway so Slack Socket Mode (re)connects with the new env.
+  // ensureGateway / restartGateway inject platform+BYOK keys; Slack comes from
+  // the durable file merged by start-hermes.sh.
+  try {
+    await withRetry(
+      () =>
+        restartGateway(container, {
+          providerKeys: collectProviderKeys(c.env),
+          gatewayToken,
+          defaultModel: c.env.HERMES_DEFAULT_MODEL,
+        }),
+      { attempts: 2, timeoutMs: 300_000, label: `slack-restart:${agentId}` },
+    );
+  } catch (err) {
+    // Config is on disk — report partial success so public-api can still mark
+    // applied-with-warning rather than rolling back the Mongo record.
+    return c.json(
+      {
+        ok: true,
+        agentId,
+        enabled: parsed.body.enabled,
+        restarted: false,
+        warning: err instanceof Error ? err.message : String(err),
+      },
+      200,
+    );
+  }
+
+  return c.json({
+    ok: true,
+    agentId,
+    enabled: parsed.body.enabled,
+    restarted: true,
+    // Never echo tokens back.
+    hasBotToken: Boolean(parsed.body.botToken),
+    hasAppToken: Boolean(parsed.body.appToken),
+    allowedChannels: parsed.body.allowedChannels || '',
+  });
 });
 
 /**
