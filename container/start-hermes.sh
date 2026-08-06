@@ -127,8 +127,15 @@ hermes config set API_SERVER_HOST 0.0.0.0 || hermes config set API_SERVER_BIND 0
 # advertises a provider it cannot reach.
 if [ -n "${CLOUDFLARE_API_KEY:-}" ] && [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
     CF_AI_BASE="https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/ai/v1"
-    hermes config set model.providers.cfai.base_url "$CF_AI_BASE" >> "$LOG_FILE" 2>&1 || true
-    hermes config set model.providers.cfai.key_env "CLOUDFLARE_API_KEY" >> "$LOG_FILE" 2>&1 || true
+    # `providers.<slug>`, NOT `model.providers.<slug>`. Hermes reads user
+    # providers with a top-level `cfg.get("providers")` (hermes_cli/doctor.py,
+    # hermes_cli/providers.py::resolve_user_provider) and nothing in the CLI
+    # reads `model.providers` at all. `hermes config set` accepts any dotted
+    # path, so the wrong prefix was written, echoed back a ✓, and resolved to
+    # nothing — which is why the cfai workaround failed with the same error as
+    # the broken `cloudflare/` adapter it was meant to sidestep.
+    hermes config set providers.cfai.base_url "$CF_AI_BASE" >> "$LOG_FILE" 2>&1 || true
+    hermes config set providers.cfai.key_env "CLOUDFLARE_API_KEY" >> "$LOG_FILE" 2>&1 || true
     echo "[startup] registered cfai provider -> $CF_AI_BASE" >> "$LOG_FILE"
 else
     echo "[startup] cfai provider NOT registered (need CLOUDFLARE_API_KEY + CLOUDFLARE_ACCOUNT_ID)" >> "$LOG_FILE"

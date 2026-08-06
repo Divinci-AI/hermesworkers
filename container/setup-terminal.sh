@@ -43,7 +43,17 @@ GUARD=/usr/local/bin/egress-guard.js
 GUARD_LOG=/var/log/hermes-egress-guard.out
 
 log() { echo "[setup-terminal] $*"; }
-fail() { echo "[setup-terminal] FATAL: $*" >&2; exit 1; }
+# The FATAL goes to BOTH streams. It used to be stderr-only, and the caller
+# (ensureTerminalBoundary) reports `stderr || stdout` — when the exec surfaced
+# no stderr, the reason the boundary failed was silently dropped and the error
+# read as "exits 1 after the last successful step" with no cause. Duplicating
+# onto stdout costs nothing and is the difference between a diagnosable refusal
+# and a mystery.
+fail() {
+  echo "[setup-terminal] FATAL: $*"
+  echo "[setup-terminal] FATAL: $*" >&2
+  exit 1
+}
 
 [ "$(id -u)" -eq 0 ] || fail "must run as root to establish the terminal boundary"
 
