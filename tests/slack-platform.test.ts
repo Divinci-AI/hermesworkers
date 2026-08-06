@@ -62,6 +62,31 @@ describe('buildSlackEnvFile', () => {
   });
 });
 
+describe('allowAllUsers (open-workspace access)', () => {
+  const tokens = { enabled: true as const, botToken: 'xoxb-x', appToken: 'xapp-x' };
+
+  it('omits SLACK_ALLOW_ALL_USERS unless explicitly true', () => {
+    expect(buildSlackEnvFile({ ...tokens })).not.toContain('SLACK_ALLOW_ALL_USERS');
+    expect(buildSlackEnvFile({ ...tokens, allowAllUsers: false })).not.toContain(
+      'SLACK_ALLOW_ALL_USERS',
+    );
+  });
+
+  it('writes SLACK_ALLOW_ALL_USERS=true when set', () => {
+    expect(buildSlackEnvFile({ ...tokens, allowAllUsers: true })).toContain(
+      'SLACK_ALLOW_ALL_USERS=true',
+    );
+  });
+
+  it('only accepts a real boolean — a truthy string must not open the workspace', () => {
+    const parsed = parseSlackApplyBody({ ...tokens, allowAllUsers: 'true' });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.body.allowAllUsers).toBe(false);
+    expect(buildSlackEnvFile(parsed.body)).not.toContain('SLACK_ALLOW_ALL_USERS');
+  });
+});
+
 describe('buildSlackApplyShell', () => {
   it('disables by removing the durable file', () => {
     const sh = buildSlackApplyShell({ enabled: false });

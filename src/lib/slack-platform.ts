@@ -20,6 +20,15 @@ export interface SlackApplyBody {
   botToken?: string;
   appToken?: string;
   allowedUsers?: string;
+  /**
+   * Open the agent to EVERY member of the Slack workspace.
+   *
+   * Hermes' gate (`plugins/platforms/slack/adapter.py`) checks
+   * SLACK_ALLOW_ALL_USERS first, then the SLACK_ALLOWED_USERS list, and
+   * otherwise DENIES. So an empty allowlist is deny-all, not allow-all —
+   * without this flag there is no way to express "the whole workspace".
+   */
+  allowAllUsers?: boolean;
   allowedChannels?: string;
   freeResponseChannels?: string;
   homeChannel?: string;
@@ -60,6 +69,7 @@ export function parseSlackApplyBody(raw: unknown): SlackApplyParse {
       botToken: str('botToken'),
       appToken: str('appToken'),
       allowedUsers: str('allowedUsers') ?? '',
+      allowAllUsers: o.allowAllUsers === true,
       allowedChannels: str('allowedChannels') ?? '',
       freeResponseChannels: str('freeResponseChannels') ?? '',
       homeChannel: str('homeChannel'),
@@ -114,6 +124,10 @@ export function buildSlackEnvFile(body: SlackApplyBody): string | null {
     envLine('SLACK_BOT_TOKEN', body.botToken!),
     envLine('SLACK_APP_TOKEN', body.appToken!),
   ];
+  // Written only when true: Hermes treats the mere PRESENCE of a truthy value
+  // as open access, so emitting `SLACK_ALLOW_ALL_USERS=false` is fine but
+  // omitting it entirely keeps the deny-by-default path unambiguous.
+  if (body.allowAllUsers) lines.push(envLine('SLACK_ALLOW_ALL_USERS', 'true'));
   if (body.allowedUsers) lines.push(envLine('SLACK_ALLOWED_USERS', body.allowedUsers));
   if (body.allowedChannels) lines.push(envLine('SLACK_ALLOWED_CHANNELS', body.allowedChannels));
   if (body.freeResponseChannels) {

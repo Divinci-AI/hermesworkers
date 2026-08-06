@@ -78,10 +78,30 @@ RUN ARCH="$(dpkg --print-architecture)" \
 # credential resolution order). No credential file is ever written into the
 # image or the workspace: the token is injected for the duration of one command
 # and never persisted. See buildWorkspaceCommand() in src/lib/terminal.ts.
+# ⚠️ Install the MUSL artifact, not the npm package. `npm i -g
+# @googleworkspace/cli` runs a postinstall that picks the artifact from
+# `ldd --version`: glibc here, so it fetches the `-gnu` build, which is linked
+# against GLIBC 2.39. This base image is jammy (GLIBC 2.35), so that build dies
+# at `gws --version` with:
+#   /lib/x86_64-linux-gnu/libc.so.6: version `GLIBC_2.39' not found
+# It only ever "worked" off a warm layer cache — a cold build has always failed,
+# and `docker image prune` after a deploy is enough to expose it.
+#
+# The `-musl` artifact of the SAME pinned release is statically linked and
+# carries no libc floor. Fetching it directly keeps both guarantees the npm path
+# gave us: the URL is version-pinned to the GitHub release, and the .sha256
+# published alongside it is verified before the binary is installed.
 ENV GWS_VERSION=0.22.5
-RUN npm install -g "@googleworkspace/cli@${GWS_VERSION}" \
-    && gws --version \
-    && npm cache clean --force
+ENV GWS_ARTIFACT=google-workspace-cli-x86_64-unknown-linux-musl.tar.gz
+RUN set -eux; \
+    base="https://github.com/googleworkspace/cli/releases/download/v${GWS_VERSION}"; \
+    curl -fsSL "${base}/${GWS_ARTIFACT}" -o /tmp/gws.tar.gz; \
+    curl -fsSL "${base}/${GWS_ARTIFACT}.sha256" -o /tmp/gws.sha256; \
+    echo "$(cut -d' ' -f1 /tmp/gws.sha256)  /tmp/gws.tar.gz" | sha256sum -c -; \
+    tar -xzf /tmp/gws.tar.gz -C /tmp; \
+    install -m 0755 "$(find /tmp -maxdepth 2 -type f -name gws | head -n1)" /usr/local/bin/gws; \
+    rm -rf /tmp/gws.tar.gz /tmp/gws.sha256; \
+    gws --version
 
 # Pin HOME so Cloudflare Sandbox snapshot/backup catches Hermes state under ~/.hermes.
 ENV HOME=/home/hermes
