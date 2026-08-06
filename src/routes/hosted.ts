@@ -18,6 +18,7 @@ import {
 import { withRetry } from '../lib/resilience';
 import { ensureGateway, HERMES_API_PORT, killGateway, restartGateway } from '../services/container-lifecycle';
 import { parseSlackApplyBody, buildSlackApplyShell } from '../lib/slack-platform';
+import { BOOT_CHECK_COMMAND, parseBootCheck } from '../lib/boot-check';
 import { parseAgentConfigBody, buildAgentConfigShell } from '../lib/agent-config';
 import {
   LOG_SOURCES,
@@ -123,19 +124,17 @@ hosted.get('/hosted/agent/boot-check', async (c) => {
   }
 
   const result = await withRetry<{ stdout?: string }>(
-    () => (container as any).exec(
-      "printf 'gateway_user=%s\\n' \"$(ps -o user= -p \"$(pgrep -f 'hermes gateway' | head -1)\" 2>/dev/null | tr -d ' ')\"",
-    ),
+    () => (container as any).exec(BOOT_CHECK_COMMAND),
     { attempts: 3, timeoutMs: 60_000, label: `boot-check:${agentId}` },
   );
-  const out = (result?.stdout ?? '').trim();
-  const gatewayUser = (out.match(/gateway_user=(\S+)/) || [])[1] ?? '';
+  const facts = parseBootCheck(result?.stdout);
   return c.json({
     ok: true,
     agentId,
-    gatewayUser,
-    nonRoot: gatewayUser !== '' && gatewayUser !== 'root', // true ⇒ gosu drop worked
-    raw: out,
+    gatewayUser: facts.gatewayUser,
+    nonRoot: facts.nonRoot,
+    slackEnvPresent: facts.slackEnvPresent,
+    raw: (result?.stdout ?? '').trim(),
   });
 });
 
