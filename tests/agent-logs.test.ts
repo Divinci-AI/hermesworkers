@@ -132,4 +132,25 @@ describe('redactLog', () => {
   it('is safe on empty input', () => {
     expect(redactLog('')).toEqual({ text: '', redactions: 0 });
   });
+
+  it('keeps an env var NAME used as a value — it is a reference, not a secret', () => {
+    // This is the real startup line for the cfai provider. Redacting the value
+    // hides which variable the provider reads, which is the whole question.
+    const line = '✓ Set providers.cfai.key_env = CLOUDFLARE_API_KEY in /home/hermes/.hermes/config.yaml';
+    const out = redactLog(line);
+    expect(out.text).toBe(line);
+    expect(out.redactions).toBe(0);
+  });
+
+  it('still redacts values that merely look shouty but are not env-var-shaped', () => {
+    for (const value of [
+      'ABCDEF1234567890abcdef',           // has lowercase
+      'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', // no underscore
+      'A_VERY_LONG_UPPERCASE_VALUE_THAT_EXCEEDS_THE_LENGTH_CEILING_FOR_A_NAME',
+    ]) {
+      const out = redactLog(`SOME_TOKEN=${value}`);
+      expect(out.redactions).toBeGreaterThan(0);
+      expect(out.text).not.toContain(value);
+    }
+  });
 });

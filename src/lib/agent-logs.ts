@@ -86,11 +86,30 @@ const REDACTIONS: Array<{ re: RegExp; label: string }> = [
  * can tell "clean log" from "log with things scrubbed out of it" without having
  * to diff anything.
  */
+/**
+ * An all-caps identifier is an env var NAME, not its value — `key_env` and
+ * similar settings hold a reference to a credential rather than the credential.
+ * Redacting those hides the single most useful thing in a config line ("which
+ * variable does this provider read?") and protects nothing.
+ *
+ * Deliberately narrow: uppercase, underscore-bearing, and short. A real secret
+ * that is pure `[A-Z0-9_]` and under 48 chars is not a shape any vendor issues —
+ * base64/hex keys carry lowercase, and tokens are longer.
+ */
+function isEnvVarName(value: string): boolean {
+  return value.length <= 48 && value.includes('_') && /^[A-Z][A-Z0-9_]*$/.test(value);
+}
+
 export function redactLog(text: string): { text: string; redactions: number } {
   let out = text;
   let count = 0;
   for (const { re, label } of REDACTIONS) {
     out = out.replace(re, (...args: unknown[]) => {
+      // Only the generic assignment rule can match a bare reference; the vendor
+      // patterns above are all specific enough that this cannot apply to them.
+      if (label === 'REDACTED' && typeof args[4] === 'string' && isEnvVarName(args[4])) {
+        return String(args[0]);
+      }
       count += 1;
       // The assignment pattern has capture groups; keep the name and separator
       // so the line stays diagnostic ("CLOUDFLARE_API_KEY=[REDACTED]" tells you
