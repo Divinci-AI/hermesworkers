@@ -1,14 +1,16 @@
 /**
  * Network-boundary diagnostic for the hosted terminal.
  *
- * WHY THIS EXISTS: `setup-terminal.sh` fails its egress self-test in the hosted
- * sandbox — the terminal user reaches the open internet even though the
- * iptables owner-match rules install successfully. The terminal is the only
- * arbitrary-exec surface, and it is gated behind the very boundary that is
- * failing, so there was no way to look. A container change costs a ~30 min
- * eviction to take effect; this is a Worker-only surface that runs a FIXED
- * battery through the same root `container.exec` that boot-check uses, so the
- * debug loop is seconds instead of half an hour.
+ * WHY THIS EXISTS: when the terminal's egress boundary is wrong, the terminal
+ * itself — the only arbitrary-exec surface — is gated behind it, so there is no
+ * way to look. This runs a FIXED battery through the same root `container.exec`
+ * that boot-check uses. It also decouples the debug loop from the container:
+ * a container change needs a ~30 min eviction to take effect, this is
+ * Worker-only and lands in seconds.
+ *
+ * It found the 2026-08-06 failure: the lockdown covered IPv4 only on a
+ * dual-stack sandbox, so a plain curl left over IPv6 while the v4 REJECT
+ * counters ticked up and looked healthy.
  *
  * The command string is a constant. Nothing here interpolates caller input —
  * this must never become a general exec endpoint, which is what the terminal
@@ -18,12 +20,12 @@
 /**
  * Fixed probe battery. Ordered so the decisive facts come first:
  *
- *  - `iptables -L … -v` packet COUNTERS are the whole question. The rules
- *    demonstrably install; if their counters are zero after a connection
- *    attempt then the packets never traverse the chain, and no amount of
- *    rule-writing will help — the enforcement point is wrong, not the rule.
- *  - the self-test is re-run here so the counters are read immediately after a
- *    known attempt, rather than against whatever happened to occur since boot.
+ *  - `iptables -L … -v` packet COUNTERS distinguish "the rule never sees the
+ *    packet" (enforcement point is wrong) from "the rule sees it and the
+ *    traffic left anyway by another path" — which is what actually happened.
+ *  - egress is probed PER FAMILY. A default-stack probe can only ever report
+ *    "at least one family is open", never which, so it cannot prove a
+ *    dual-stack boundary. That ambiguity is exactly what hid the v6 hole.
  */
 export const NET_DIAG_COMMAND = [
   "echo '=== whoami/uid ==='",
@@ -68,8 +70,8 @@ export const NET_DIAG_COMMAND = [
   // Read-only. The container is dual-stack and `iptables` governs IPv4 ONLY,
   // so this is where the boundary leaked: a default curl took the unfiltered
   // IPv6 path while the IPv4 attempt was correctly rejected. setup-terminal.sh
-  // now installs the mirrored ip6tables chain; these probes confirm it is
-  // present and matching.
+  // now installs the v6 rules too; these probes confirm they are present and
+  // matching.
   "echo '=== ip6tables available? ==='",
   "command -v ip6tables && ip6tables -V 2>&1 || echo '(ip6tables MISSING)'",
   // The v6 rules live directly in OUTPUT (no custom chain — see setup-terminal.sh
