@@ -19,6 +19,14 @@ import { withRetry } from '../lib/resilience';
 import { ensureGateway, HERMES_API_PORT, killGateway, restartGateway } from '../services/container-lifecycle';
 import { parseSlackApplyBody, buildSlackApplyShell } from '../lib/slack-platform';
 import { parseAgentConfigBody, buildAgentConfigShell } from '../lib/agent-config';
+import {
+  LOG_SOURCES,
+  MAX_LOG_CHARS,
+  buildLogShell,
+  clampLines,
+  isLogSource,
+  redactLog,
+} from '../lib/agent-logs';
 import { terminal } from './terminal';
 
 type HostedCtx = { Bindings: Env; Variables: { agentId: string } };
@@ -438,6 +446,68 @@ hosted.post('/hosted/agent/config', async (c) => {
   } catch (err) {
     return c.json(
       { ok: false, agentId, error: 'write_failed', message: err instanceof Error ? err.message : String(err) },
+      502,
+    );
+  }
+});
+
+/**
+ * Read the tail of an agent container's log.
+ *
+ * Uses the raw container exec rather than Hermes' own `logs` route, which sits
+ * on the `instance` API behind ADMIN_TOKEN/API_TOKEN — secrets these Workers do
+ * not have. This therefore works when the gateway is down, which is when a log
+ * is worth reading. Output is redacted for secret-shaped values before it
+ * leaves the Worker.
+ *
+ *   GET /hosted/agent/logs?source=gateway|dashboard&lines=200
+ */
+hosted.get('/hosted/agent/logs', async (c) => {
+  const agentId = c.var.agentId;
+
+  const rawSource = c.req.query('source') ?? 'gateway';
+  if (!isLogSource(rawSource)) {
+    return c.json(
+      {
+        error: 'invalid_source',
+        message: `source must be one of: ${Object.keys(LOG_SOURCES).join(', ')}`,
+      },
+      400,
+    );
+  }
+  const lines = clampLines(c.req.query('lines'));
+
+  const container = getContainerForAgent(c.env, agentId);
+  try {
+    const result = await withRetry<{ stdout?: string; stderr?: string; exitCode?: number }>(
+      () => (container as any).exec(buildLogShell(rawSource, lines), { timeout: 30_000 }),
+      { attempts: 2, timeoutMs: 60_000, label: `logs:${agentId}` },
+    );
+    // stdout and stderr are BOTH surfaced. The container's own scripts split
+    // their output across the two (setup-terminal.sh logs to stdout but writes
+    // its FATAL to stderr), and reporting only one is how a fatal error becomes
+    // invisible — the exact failure this route exists to end.
+    const stdout = redactLog((result?.stdout ?? '').toString().slice(0, MAX_LOG_CHARS));
+    const stderr = redactLog((result?.stderr ?? '').toString().slice(0, MAX_LOG_CHARS));
+    return c.json({
+      ok: true,
+      agentId,
+      source: rawSource,
+      path: LOG_SOURCES[rawSource],
+      lines,
+      exitCode: result?.exitCode ?? 0,
+      redactions: stdout.redactions + stderr.redactions,
+      log: stdout.text,
+      stderr: stderr.text,
+    });
+  } catch (err) {
+    return c.json(
+      {
+        ok: false,
+        agentId,
+        error: 'log_read_failed',
+        message: err instanceof Error ? err.message : String(err),
+      },
       502,
     );
   }
