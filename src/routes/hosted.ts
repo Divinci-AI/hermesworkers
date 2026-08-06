@@ -27,6 +27,7 @@ import {
   isLogSource,
   redactLog,
 } from '../lib/agent-logs';
+import { NET_DIAG_COMMAND } from '../lib/net-diag';
 import { terminal } from './terminal';
 
 type HostedCtx = { Bindings: Env; Variables: { agentId: string } };
@@ -508,6 +509,37 @@ hosted.get('/hosted/agent/logs', async (c) => {
         error: 'log_read_failed',
         message: err instanceof Error ? err.message : String(err),
       },
+      502,
+    );
+  }
+});
+
+/**
+ * Network-boundary diagnostic. Runs a FIXED probe battery (no caller input) as
+ * root in the container, to work out why the terminal's egress lockdown does
+ * not hold in the hosted sandbox. See lib/net-diag.ts for why this exists as a
+ * separate surface rather than being debugged through the terminal itself.
+ */
+hosted.get('/hosted/agent/net-diag', async (c) => {
+  const agentId = c.var.agentId;
+  const container = getContainerForAgent(c.env, agentId);
+  try {
+    const result = await withRetry<{ stdout?: string; stderr?: string; exitCode?: number }>(
+      () => (container as any).exec(NET_DIAG_COMMAND, { timeout: 60_000 }),
+      { attempts: 1, timeoutMs: 90_000, isRetryable: () => false, label: `net-diag:${agentId}` },
+    );
+    const stdout = redactLog((result?.stdout ?? '').toString().slice(0, MAX_LOG_CHARS));
+    const stderr = redactLog((result?.stderr ?? '').toString().slice(0, MAX_LOG_CHARS));
+    return c.json({
+      ok: true,
+      agentId,
+      exitCode: result?.exitCode ?? 0,
+      out: stdout.text,
+      stderr: stderr.text,
+    });
+  } catch (err) {
+    return c.json(
+      { ok: false, agentId, error: 'net_diag_failed', message: err instanceof Error ? err.message : String(err) },
       502,
     );
   }

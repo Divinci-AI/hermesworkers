@@ -85,10 +85,22 @@ fi
 hdr "3. Network — egress is allowlisted and unbypassable"
 # Direct connection, explicitly ignoring the proxy: must be blocked at the
 # packet layer. This is the property the proxy alone cannot provide.
+# PER FAMILY. A single default-stack probe is satisfied by whichever family
+# happy-eyeballs wins with, so it can only report "at least one family is open"
+# — it cannot tell you which, and it passes a v4-locked/v6-open box exactly as
+# readily as a fully locked one. That gap shipped: iptables covered v4 only
+# while the dual-stack sandbox routed a plain `curl` straight out over v6.
+for fam in -4 -6; do
+  if as_term curl "$fam" -s --max-time 6 --noproxy '*' -o /dev/null https://example.com 2>/dev/null; then
+    bad "direct egress to a NON-allowlisted host succeeded over IPv${fam#-} (proxy is bypassable)"
+  else
+    ok "direct egress to a non-allowlisted host blocked over IPv${fam#-}"
+  fi
+done
 if as_term curl -s --max-time 6 --noproxy '*' -o /dev/null https://example.com 2>/dev/null; then
-  bad "direct egress to a NON-allowlisted host succeeded (proxy is bypassable)"
+  bad "direct egress to a NON-allowlisted host succeeded (default stack)"
 else
-  ok "direct egress to a non-allowlisted host blocked"
+  ok "direct egress to a non-allowlisted host blocked (default stack)"
 fi
 if as_term curl -s --max-time 6 --noproxy '*' -o /dev/null https://github.com 2>/dev/null; then
   bad "direct egress to an allowlisted host bypassed the guard"

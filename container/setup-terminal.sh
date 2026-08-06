@@ -24,10 +24,14 @@
 #      leave them readable. Starting from an empty environment is the only way
 #      to be sure.
 #
-#   3. NETWORK — iptables owner-match REJECTs all egress from uid 10002 except
-#      loopback (to the egress guard) and DNS. Everything else must transit the
-#      allowlisting proxy. Without this layer the proxy is advisory: any command
-#      could simply ignore HTTP_PROXY and open a socket.
+#   3. NETWORK — iptables AND ip6tables owner-match REJECT all egress from uid
+#      10002 except loopback (to the egress guard) and DNS. Everything else must
+#      transit the allowlisting proxy. Without this layer the proxy is advisory:
+#      any command could simply ignore HTTP_PROXY and open a socket.
+#
+#      BOTH families are mandatory. The sandbox is dual-stack, so an IPv4-only
+#      ruleset leaves egress fully open over IPv6 — which is what shipped, and
+#      what a default `curl` actually used. See §3b.
 #
 #   4. FILESYSTEM — /workspace is owned by hermes-term; the Worker confines all
 #      file tool paths to it. Layer 1 is what stops a shell command from
@@ -136,15 +140,62 @@ iptables -w 5 -A HERMES_TERM -j REJECT --reject-with icmp-port-unreachable
 iptables -w 5 -A OUTPUT -m owner --uid-owner "$TERM_UID" -j HERMES_TERM \
   || fail "cannot attach owner-match rule; refusing to enable terminal"
 
-log "network lockdown active for uid ${TERM_UID} (loopback + DNS only; all else via guard)"
+# ── 3b. The SAME lockdown for IPv6 ─────────────────────────────────────────
+# `iptables` governs IPv4 only. The sandbox is dual-stack — cfeth0 carries a
+# global IPv6 address — so an IPv4-only ruleset leaves egress wide open over
+# IPv6, and curl's happy-eyeballs prefers it. That is not a corner case: it is
+# the path a default `curl https://…` actually takes, which is why the v4 rules
+# showed correct REJECT counters while the self-test still reached the internet.
+#
+# Without ip6tables there is no way to close that half, so this is fail-closed
+# for the same reason the v4 side is: a boundary that only covers one address
+# family is not a boundary.
+command -v ip6tables >/dev/null 2>&1 || fail "ip6tables not available; cannot lock down IPv6 egress"
+
+ip6tables -w 5 -D OUTPUT -m owner --uid-owner "$TERM_UID" -j HERMES_TERM6 2>/dev/null || true
+ip6tables -w 5 -F HERMES_TERM6 2>/dev/null || true
+ip6tables -w 5 -X HERMES_TERM6 2>/dev/null || true
+
+if ! ip6tables -w 5 -N HERMES_TERM6 2>/dev/null; then
+  fail "cannot create ip6tables chain; refusing to enable terminal"
+fi
+
+ip6tables -w 5 -A HERMES_TERM6 -o lo -j ACCEPT
+ip6tables -w 5 -A HERMES_TERM6 -p udp --dport 53 -j ACCEPT
+ip6tables -w 5 -A HERMES_TERM6 -p tcp --dport 53 -j ACCEPT
+ip6tables -w 5 -A HERMES_TERM6 -j REJECT --reject-with icmp6-port-unreachable
+
+ip6tables -w 5 -A OUTPUT -m owner --uid-owner "$TERM_UID" -j HERMES_TERM6 \
+  || fail "cannot attach IPv6 owner-match rule; refusing to enable terminal"
+
+log "network lockdown active for uid ${TERM_UID} on IPv4 AND IPv6 (loopback + DNS only; all else via guard)"
 
 # ── 4. Self-test ───────────────────────────────────────────────────────────
 # Prove the boundary holds before declaring success. A direct connection to a
 # non-allowlisted host MUST fail for the terminal user.
-if gosu "$TERM_USER" env -i PATH=/usr/bin:/bin \
-     curl -s --max-time 5 --noproxy '*' -o /dev/null https://example.com 2>/dev/null; then
-  fail "self-test FAILED: terminal user reached the open internet directly"
-fi
-log "self-test passed: direct egress from ${TERM_USER} is blocked"
+#
+# EACH ADDRESS FAMILY IS TESTED SEPARATELY, and this is the whole lesson of the
+# 2026-08-06 failure: the old test issued a single default-stack curl, which
+# happy-eyeballs is free to satisfy over EITHER family. It did catch the leak —
+# but a default-stack probe can only ever tell you "at least one family is
+# open", never which, and had v4 been the open one the same test could equally
+# have passed while v6 leaked. Naming the family makes the failure actionable
+# and makes a one-family regression impossible to miss.
+#
+# A family with no connectivity at all trivially "passes". That is the safe
+# direction (nothing to block), and it is why the ip6tables rules above are
+# installed unconditionally rather than only when v6 traffic is observed.
+egress_blocked() { # $1 = curl family flag
+  ! gosu "$TERM_USER" env -i PATH=/usr/bin:/bin \
+      curl "$1" -s --max-time 5 --noproxy '*' -o /dev/null https://example.com 2>/dev/null
+}
+
+egress_blocked -4 || fail "self-test FAILED: terminal user reached the open internet over IPv4"
+egress_blocked -6 || fail "self-test FAILED: terminal user reached the open internet over IPv6"
+# Default stack last: with both families locked down this must also fail, and it
+# catches anything that resolves through a path the explicit flags did not.
+egress_blocked --http1.1 || fail "self-test FAILED: terminal user reached the open internet (default stack)"
+
+log "self-test passed: direct egress from ${TERM_USER} is blocked on IPv4, IPv6 and the default stack"
 
 log "terminal boundary established"
