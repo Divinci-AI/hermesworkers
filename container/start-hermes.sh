@@ -107,6 +107,33 @@ echo "[startup] wrote $HERMES_ENV_FILE ($(wc -l < "$HERMES_ENV_FILE") lines)" >>
 # (external IP), not loopback. Hermes defaults to 127.0.0.1 which is unreachable from the Worker.
 hermes config set API_SERVER_HOST 0.0.0.0 || hermes config set API_SERVER_BIND 0.0.0.0 || true
 
+# ── Cloudflare Workers AI via the OpenAI-compatible endpoint ────────────────
+#
+# litellm's built-in `cloudflare/` provider is BROKEN against Workers AI today.
+# Verified on staging 2026-08-06: every `cloudflare/@cf/*` model (Kimi K2.7-Code
+# AND Llama 3.3, so it is not model-specific) fails in under a second with
+#   "Attempted to access streaming response content, without having called read()"
+# while the exact same model answers fine on Cloudflare's own REST endpoint.
+# The adapter still expects the old text-generation body shape
+# (`{"result":{"response":"…"}}`) and mis-parses today's OpenAI-shaped one,
+# then throws again on its own error path.
+#
+# Cloudflare also serves an OpenAI-compatible endpoint, so register it as a
+# NAMED provider and sidestep the broken adapter entirely. Models are then
+# addressed as `cfai/@cf/<vendor>/<model>`.
+#
+# Only wired when BOTH the token and the account id are present — same
+# all-or-nothing rule as collectProviderKeys, so a half-configured Worker never
+# advertises a provider it cannot reach.
+if [ -n "${CLOUDFLARE_API_KEY:-}" ] && [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
+    CF_AI_BASE="https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/ai/v1"
+    hermes config set model.providers.cfai.base_url "$CF_AI_BASE" >> "$LOG_FILE" 2>&1 || true
+    hermes config set model.providers.cfai.key_env "CLOUDFLARE_API_KEY" >> "$LOG_FILE" 2>&1 || true
+    echo "[startup] registered cfai provider -> $CF_AI_BASE" >> "$LOG_FILE"
+else
+    echo "[startup] cfai provider NOT registered (need CLOUDFLARE_API_KEY + CLOUDFLARE_ACCOUNT_ID)" >> "$LOG_FILE"
+fi
+
 # Pin a default model so the API server can route requests when the caller does not specify one,
 # or when the supplied model is not pre-registered with Hermes. Override with HERMES_DEFAULT_MODEL.
 #
