@@ -109,7 +109,30 @@ hermes config set API_SERVER_HOST 0.0.0.0 || hermes config set API_SERVER_BIND 0
 
 # Pin a default model so the API server can route requests when the caller does not specify one,
 # or when the supplied model is not pre-registered with Hermes. Override with HERMES_DEFAULT_MODEL.
-hermes config set model "${HERMES_DEFAULT_MODEL:-anthropic/claude-sonnet-4-5}" || true
+#
+# PRECEDENCE: a PER-AGENT pin (written by POST /hosted/agent/config) beats the
+# Worker-wide HERMES_DEFAULT_MODEL secret. Without this, every agent on a Worker
+# answered gateway traffic — Slack included — on the same model regardless of
+# its own hermesModel, because only Divinci-routed chats got the agent's choice.
+AGENT_MODEL_ENV="$HOME_DIR/.hermes/divinci-platforms/model.env"
+AGENT_MODEL=""
+if [ -f "$AGENT_MODEL_ENV" ]; then
+    # shellcheck disable=SC1090
+    AGENT_MODEL="$(sed -n 's/^HERMES_AGENT_MODEL=//p' "$AGENT_MODEL_ENV" | head -n1)"
+fi
+EFFECTIVE_MODEL="${AGENT_MODEL:-${HERMES_DEFAULT_MODEL:-anthropic/claude-sonnet-4-5}}"
+hermes config set model "$EFFECTIVE_MODEL" || true
+echo "[startup] model=$EFFECTIVE_MODEL (per-agent=${AGENT_MODEL:-none})" >> "$LOG_FILE"
+
+# Per-agent identity. Hermes loads SOUL.md from HERMES_HOME as slot #1 of the
+# system prompt, replacing its built-in identity — so this is what makes an
+# agent's persona apply to Slack and not just to Divinci-routed chats.
+# The file is written by POST /hosted/agent/config and survives sleep/wake;
+# nothing to do here but make sure ownership is right after a cold start.
+if [ -f "$HOME_DIR/.hermes/SOUL.md" ]; then
+    chown hermes:hermes "$HOME_DIR/.hermes/SOUL.md" 2>/dev/null || true
+    echo "[startup] SOUL.md present ($(wc -c < "$HOME_DIR/.hermes/SOUL.md") bytes)" >> "$LOG_FILE"
+fi
 
 # ── Lock down Hermes' OWN command execution (hosted multi-tenant mode) ──────
 #

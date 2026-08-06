@@ -18,6 +18,7 @@ import {
 import { withRetry } from '../lib/resilience';
 import { ensureGateway, HERMES_API_PORT, killGateway, restartGateway } from '../services/container-lifecycle';
 import { parseSlackApplyBody, buildSlackApplyShell } from '../lib/slack-platform';
+import { parseAgentConfigBody, buildAgentConfigShell } from '../lib/agent-config';
 import { terminal } from './terminal';
 
 type HostedCtx = { Bindings: Env; Variables: { agentId: string } };
@@ -378,6 +379,68 @@ hosted.post('/hosted/agent/platforms/slack', async (c) => {
     hasAppToken: Boolean(parsed.body.appToken),
     allowedChannels: parsed.body.allowedChannels || '',
   });
+});
+
+/**
+ * Apply per-agent identity (SOUL.md) and model pin into the container.
+ *
+ * Divinci calls this whenever an agent's systemPrompt or hermesModel changes.
+ * Without it those two fields only affect chats routed through Divinci's own
+ * API — Slack (and any other gateway platform) never sees them, because those
+ * replies are composed by the container's Hermes gateway, not by us.
+ *
+ * Unlike the Slack route this does NOT restart the gateway: `hermes config set`
+ * applies live, and SOUL.md is re-read per turn. A restart would drop active
+ * Socket Mode conversations to change a persona, which is a bad trade.
+ */
+hosted.post('/hosted/agent/config', async (c) => {
+  const agentId = c.var.agentId;
+  let raw: unknown;
+  try {
+    raw = await c.req.json();
+  } catch {
+    return c.json({ error: 'invalid_json', message: 'body must be JSON' }, 400);
+  }
+
+  const parsed = parseAgentConfigBody(raw);
+  if (!parsed.ok) {
+    return c.json({ error: 'invalid_body', message: parsed.error }, parsed.status);
+  }
+
+  const container = getContainerForAgent(c.env, agentId);
+  try {
+    requireGatewayToken(c.env);
+  } catch (err) {
+    return c.json(
+      { error: 'server_misconfigured', message: err instanceof Error ? err.message : String(err) },
+      503,
+    );
+  }
+
+  const shell = buildAgentConfigShell(parsed.body);
+  try {
+    const result = await withRetry<{ stdout?: string; stderr?: string; exitCode?: number }>(
+      () => (container as any).exec(shell, { timeout: 60_000 }),
+      { attempts: 2, timeoutMs: 90_000, label: `agent-config:${agentId}` },
+    );
+    if (result?.exitCode && result.exitCode !== 0) {
+      return c.json(
+        {
+          ok: false,
+          agentId,
+          error: 'write_failed',
+          message: (result.stderr || result.stdout || 'non-zero exit').toString().substring(0, 400),
+        },
+        502,
+      );
+    }
+    return c.json({ ok: true, agentId, stdout: (result?.stdout || '').toString().substring(0, 400) }, 200);
+  } catch (err) {
+    return c.json(
+      { ok: false, agentId, error: 'write_failed', message: err instanceof Error ? err.message : String(err) },
+      502,
+    );
+  }
 });
 
 /**
