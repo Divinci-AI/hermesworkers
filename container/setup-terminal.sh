@@ -152,21 +152,53 @@ iptables -w 5 -A OUTPUT -m owner --uid-owner "$TERM_UID" -j HERMES_TERM \
 # family is not a boundary.
 command -v ip6tables >/dev/null 2>&1 || fail "ip6tables not available; cannot lock down IPv6 egress"
 
+# NOTE the deliberate asymmetry with the IPv4 block above: no custom chain here,
+# the rules go straight into OUTPUT.
+#
+# A custom v6 chain DOES work on a clean container — but this `ip6tables` is the
+# nft-backed build, and a HERMES_TERM6 chain was observed reaching a state the
+# iptables-nft compatibility layer could no longer map:
+#
+#   ip6tables: chain `HERMES_TERM6' in table `filter' is incompatible, use 'nft' tool.
+#
+# In that state the chain cannot be listed, flushed or deleted through
+# ip6tables, `nft` is not installed in this image, and IPv6 egress silently
+# reverts to open. Since that is reachable, and since a bricked boundary means a
+# terminal that never comes up, the v6 side avoids the construct entirely.
+# OUTPUT itself remained listable and writable throughout.
+#
+# The IPv4 chain is left as-is: it is long-established, has not exhibited this,
+# and churning a working control adds risk rather than removing it.
+
+# Idempotent cleanup. Repeat -D until it fails: an interrupted earlier run can
+# leave duplicates, and a single -D removes only the first match.
+for _ in 1 2 3 4 5; do
+  ip6tables -w 5 -D OUTPUT -m owner --uid-owner "$TERM_UID" -o lo -j ACCEPT 2>/dev/null || break
+done
+for _ in 1 2 3 4 5; do
+  ip6tables -w 5 -D OUTPUT -m owner --uid-owner "$TERM_UID" -p udp --dport 53 -j ACCEPT 2>/dev/null || break
+done
+for _ in 1 2 3 4 5; do
+  ip6tables -w 5 -D OUTPUT -m owner --uid-owner "$TERM_UID" -p tcp --dport 53 -j ACCEPT 2>/dev/null || break
+done
+for _ in 1 2 3 4 5; do
+  ip6tables -w 5 -D OUTPUT -m owner --uid-owner "$TERM_UID" -j REJECT --reject-with icmp6-port-unreachable 2>/dev/null || break
+done
+# Best-effort removal of a legacy custom chain from an earlier build. Failure is
+# fine — the rules below do not depend on it, and it is unreferenced once the
+# jump above is gone.
 ip6tables -w 5 -D OUTPUT -m owner --uid-owner "$TERM_UID" -j HERMES_TERM6 2>/dev/null || true
 ip6tables -w 5 -F HERMES_TERM6 2>/dev/null || true
 ip6tables -w 5 -X HERMES_TERM6 2>/dev/null || true
 
-if ! ip6tables -w 5 -N HERMES_TERM6 2>/dev/null; then
-  fail "cannot create ip6tables chain; refusing to enable terminal"
-fi
-
-ip6tables -w 5 -A HERMES_TERM6 -o lo -j ACCEPT
-ip6tables -w 5 -A HERMES_TERM6 -p udp --dport 53 -j ACCEPT
-ip6tables -w 5 -A HERMES_TERM6 -p tcp --dport 53 -j ACCEPT
-ip6tables -w 5 -A HERMES_TERM6 -j REJECT --reject-with icmp6-port-unreachable
-
-ip6tables -w 5 -A OUTPUT -m owner --uid-owner "$TERM_UID" -j HERMES_TERM6 \
-  || fail "cannot attach IPv6 owner-match rule; refusing to enable terminal"
+ip6tables -w 5 -A OUTPUT -m owner --uid-owner "$TERM_UID" -o lo -j ACCEPT \
+  || fail "cannot install IPv6 loopback rule; refusing to enable terminal"
+ip6tables -w 5 -A OUTPUT -m owner --uid-owner "$TERM_UID" -p udp --dport 53 -j ACCEPT \
+  || fail "cannot install IPv6 DNS rule; refusing to enable terminal"
+ip6tables -w 5 -A OUTPUT -m owner --uid-owner "$TERM_UID" -p tcp --dport 53 -j ACCEPT \
+  || fail "cannot install IPv6 DNS rule; refusing to enable terminal"
+ip6tables -w 5 -A OUTPUT -m owner --uid-owner "$TERM_UID" -j REJECT --reject-with icmp6-port-unreachable \
+  || fail "cannot install IPv6 reject rule; refusing to enable terminal"
 
 log "network lockdown active for uid ${TERM_UID} on IPv4 AND IPv6 (loopback + DNS only; all else via guard)"
 

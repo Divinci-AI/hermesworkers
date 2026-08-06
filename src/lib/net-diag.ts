@@ -72,9 +72,12 @@ export const NET_DIAG_COMMAND = [
   // present and matching.
   "echo '=== ip6tables available? ==='",
   "command -v ip6tables && ip6tables -V 2>&1 || echo '(ip6tables MISSING)'",
-  "echo '=== ip6 OUTPUT + HERMES_TERM6 (counters tell you if it is matching) ==='",
-  "ip6tables -L OUTPUT -n -v --line-numbers 2>&1 | head -10",
-  "ip6tables -L HERMES_TERM6 -n -v --line-numbers 2>&1 | head -10",
+  // The v6 rules live directly in OUTPUT (no custom chain — see setup-terminal.sh
+  // §3b for why). Counters on the REJECT rule are what tell you it is matching.
+  "echo '=== ip6 OUTPUT (counters tell you if it is matching) ==='",
+  "ip6tables -L OUTPUT -n -v --line-numbers 2>&1 | head -15",
+  "echo '=== legacy custom chain, if a poisoned one is still around ==='",
+  "ip6tables -L HERMES_TERM6 -n -v 2>&1 | head -5 || true",
 
   "echo '=== per-family egress probe (http=000 + nonzero exit == blocked) ==='",
   "gosu hermes-term env -i PATH=/usr/bin:/bin curl -4 -s --max-time 8 --noproxy '*' -o /dev/null -w 'v4 http=%{http_code} ip=%{remote_ip}\\n' https://example.com 2>&1; echo \"v4 curl_exit=$?\"",
