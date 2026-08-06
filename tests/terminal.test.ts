@@ -240,3 +240,16 @@ describe('validateWorkspaceArgs', () => {
     expect(() => validateWorkspaceArgs('a'.repeat(4_001))).toThrow(TerminalBoundaryError);
   });
 });
+
+describe('buildTerminalCommand — session survival', () => {
+  it('does NOT exec, so the SDK session shell survives the command', () => {
+    // `exec gosu ...` replaces the Sandbox SDK's persistent session shell, so
+    // the session dies the moment the command finishes and the SDK reports
+    // "Session 'sandbox-default' shell exited (exit code: 0)" — an error, for
+    // a command that actually succeeded. Regression-pinned because the symptom
+    // points at the session layer, not at this string.
+    const cmd = buildTerminalCommand('echo hi');
+    expect(cmd).not.toMatch(/\bexec\s+gosu\b/);
+    expect(cmd).toMatch(/\bgosu\s+hermes-term\b/);
+  });
+});

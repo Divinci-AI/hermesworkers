@@ -192,9 +192,16 @@ export function buildTerminalCommand(command: string, cwd?: string): string {
   // `bash -lc` so the agent gets a normal shell (pipes, &&, globs) — the point
   // of a terminal. Confinement comes from the uid and the network, not from
   // restricting shell syntax.
+  //
+  // NOT `exec gosu`. The Sandbox SDK runs commands inside a PERSISTENT session
+  // shell, and `exec` replaces that shell with gosu — so the session is gone
+  // the moment the command finishes and the SDK reports
+  //   Session 'sandbox-default' shell exited (exit code: 0)
+  // even though the command ran fine. Running gosu as an ordinary child leaves
+  // the session shell alive to serve the next command.
   return (
     `cd ${shellQuote(workdir)} 2>/dev/null || cd ${shellQuote(WORKSPACE_ROOT)}; ` +
-    `exec gosu ${TERMINAL_USER} env -i ${env} bash -lc ${shellQuote(command)}`
+    `gosu ${TERMINAL_USER} env -i ${env} bash -lc ${shellQuote(command)}`
   );
 }
 
