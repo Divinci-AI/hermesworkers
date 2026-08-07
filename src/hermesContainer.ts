@@ -18,15 +18,23 @@ export class HermesInstance extends Sandbox {
   defaultPort = 18789;
   // Idle containers auto-sleep after this window — the primary compute-cost
   // bound for hosted agents (a container that stops receiving requests costs
-  // nothing while asleep and wakes lazily on the next turn). Tightened from 4h
-  // to 30m for GA cost control; Divinci's dormant-agent sweep reconciles the DB
-  // `status` on top of this. Override per-deploy if a workload needs longer.
-  sleepAfter = '30m';
+  // nothing while asleep and wakes lazily on the next turn).
+  //
+  // History: 4h → 30m (GA cost control) → 5m once Slack HTTP Events mode is
+  // proven (2026-08-07). Socket-mode always-on agents keep the container warm
+  // via keepalive traffic; HTTP agents only wake per turn, so a long idle
+  // window is pure waste. Override with HERMES_SLEEP_AFTER (e.g. "10m") on
+  // the Worker if a workload needs longer.
+  sleepAfter = '5m';
 
   constructor(ctx: DurableObjectState, env: unknown) {
     // The Sandbox base constructor is typed for a concrete state shape; this DO
     // holds no typed state (all state lives in the container), so cast through.
     super(ctx as DurableObjectState<Record<string, unknown>>, env as any);
+    const override = (env as { HERMES_SLEEP_AFTER?: string } | null)?.HERMES_SLEEP_AFTER?.trim();
+    if (override) {
+      this.sleepAfter = override;
+    }
     // No baseline env required here — keys are injected at process start.
   }
 }
