@@ -275,9 +275,13 @@ export function buildWorkspaceCommand(args: string, accessToken: string, cwd?: s
     `GOOGLE_WORKSPACE_CLI_TOKEN=${accessToken}`,
   ].map(shellQuote).join(' ');
 
+  // Do NOT use `exec` here: the Sandbox session shell is a long-lived process.
+  // `exec gosu …` replaced it and the next command failed with
+  // "Session 'sandbox-default' shell exited" (seen 2026-08-07 on staging
+  // workspace CLI probes). Mirror buildTerminalCommand: run gosu as a child.
   return (
     `set +x; cd ${shellQuote(workdir)} 2>/dev/null || cd ${shellQuote(WORKSPACE_ROOT)}; ` +
-    `exec gosu ${TERMINAL_USER} env -i ${env} gws ${args}`
+    `gosu ${TERMINAL_USER} env -i ${env} gws ${args}`
   );
 }
 
