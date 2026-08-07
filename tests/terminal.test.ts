@@ -204,6 +204,18 @@ describe('buildWorkspaceCommand (Google Workspace CLI)', () => {
     expect(cmd).toContain('set +x'); // no shell tracing can echo the token
   });
 
+  /**
+   * THE 2026-08-07 staging regression. buildWorkspaceCommand used `exec gosu`,
+   * which replaced the Sandbox session shell. Every /terminal/workspace call
+   * then returned "Session 'sandbox-default' shell exited" even when gws itself
+   * succeeded. Pin the same invariant as buildTerminalCommand.
+   */
+  it('does NOT exec, so the SDK session shell survives the gws invocation', () => {
+    const cmd = buildWorkspaceCommand('drive files list', TOKEN);
+    expect(cmd).not.toMatch(/\bexec\s+gosu\b/);
+    expect(cmd).toMatch(/\bgosu\s+hermes-term\b/);
+  });
+
   it('rejects a malformed token rather than interpolating it', () => {
     for (const bad of ['', 'tok en', "tok'en", 'tok\nen', 'tok;en\n']) {
       expect(() => buildWorkspaceCommand('drive files list', bad)).toThrow(TerminalBoundaryError);
