@@ -17,7 +17,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ripgrep ffmpeg \
         netcat-openbsd iproute2 \
         iptables sudo \
-    && rm -rf /var/lib/apt/lists/*
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
+# `rm -rf /var/lib/apt/lists/*` alone removes the package LISTS but leaves the
+# downloaded .debs in /var/cache/apt/archives — measured at 323 MB in the live
+# staging container on 2026-08-07. `apt-get clean` is what drops those.
 
 # Non-root runtime user for the Hermes agent. The agent executes tools/shell
 # commands on behalf of prompts, so it must not run as root even though the
@@ -128,11 +132,17 @@ RUN python3.11 -m venv /opt/hermes-venv \
     && /opt/hermes-venv/bin/pip install --no-cache-dir --upgrade pip \
     && /opt/hermes-venv/bin/pip install --no-cache-dir uv \
     && /opt/hermes-venv/bin/uv pip install --python /opt/hermes-venv/bin/python -e ".[all]"
+# uv keeps its own wheel cache under ~/.cache/uv and, unlike the pip calls
+# above, has no --no-cache-dir on it — 240 MB of it shipped in the image
+# (measured in the live container 2026-08-07). Cleaned after the LAST uv call
+# below rather than here, so the second install still gets cache hits.
 
 # Install the web dashboard + pty extras from the SAME pinned source tree
 # (provides the native Hermes UI on port 9119). No PyPI fallback — a fallback to
 # an unpinned `hermes-agent[web,pty]` would defeat the pinning above.
-RUN /opt/hermes-venv/bin/uv pip install --python /opt/hermes-venv/bin/python -e ".[web,pty]"
+RUN /opt/hermes-venv/bin/uv pip install --python /opt/hermes-venv/bin/python -e ".[web,pty]" \
+    && /opt/hermes-venv/bin/uv cache clean \
+    && rm -rf /root/.cache/uv /home/hermes/.cache/uv
 
 # Symlink the hermes CLI globally.
 RUN ln -sf /opt/hermes-venv/bin/hermes /usr/local/bin/hermes
