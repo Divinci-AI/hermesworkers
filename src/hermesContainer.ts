@@ -21,10 +21,20 @@ export class HermesInstance extends Sandbox {
   // nothing while asleep and wakes lazily on the next turn).
   //
   // History: 4h → 30m (GA cost control) → 5m once Slack HTTP Events mode is
-  // proven (2026-08-07). Socket-mode always-on agents keep the container warm
-  // via keepalive traffic; HTTP agents only wake per turn, so a long idle
-  // window is pure waste. Override with HERMES_SLEEP_AFTER (e.g. "10m") on
-  // the Worker if a workload needs longer.
+  // proven (2026-08-07). HTTP agents only wake per turn, so a long idle window
+  // is pure waste. Override with HERMES_SLEEP_AFTER on the Worker.
+  //
+  // ⚠️ 5m is only safe when NO socket-mode agent runs on this Worker. The claim
+  // that "socket-mode agents keep the container warm via keepalive traffic" —
+  // which this comment used to make — is false whenever the keepalive interval
+  // exceeds this window. Divinci probes every 10 minutes, so at 5m the
+  // container is always asleep when probed: each tick REPLACES it, the Slack
+  // config is lost, the sweep re-pushes it, and the gateway restart announces
+  // itself in the customer's Slack channel. Observed 2026-08-08 on an exact
+  // 10-minute cadence. `wrangler.production.toml` therefore sets 30m.
+  //
+  // The invariant to preserve is a relationship, not a number: this window must
+  // be LONGER than the keepalive interval of whatever polls the container.
   sleepAfter = '5m';
 
   constructor(ctx: DurableObjectState, env: unknown) {

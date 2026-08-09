@@ -27,6 +27,36 @@ enabled = true
 # in src/lib/terminal.ts (package registries + forges).
 [vars]
 EGRESS_ALLOWED_HOSTS = "github.com,codeload.github.com,objects.githubusercontent.com,raw.githubusercontent.com,gitlab.com,registry.npmjs.org,pypi.org,files.pythonhosted.org,crates.io,static.crates.io,proxy.golang.org"
+# Divinci dogfood (divinciai.slack.com Hermes): open Workspace + platform CLI
+# API hosts. Binaries are always in the image; credentials still required.
+# Turn off for a customer-facing prod deploy that must not widen egress.
+HERMES_WORKSPACE_CLI_ENABLED = "true"
+HERMES_PLATFORM_CLI_ENABLED = "true"
+# Terminal MCP + Fulcrum (dogfood). FULCRUM_API_TOKEN is a secret — never a var.
+# ⚠️ Fulcrum token = code execution on the Fulcrum host. Keep prod dogfood-only.
+HERMES_TERMINAL_ENABLED = "true"
+# Divinci dogfood Slack (divinciai.slack.com): always-allow. Revisit before any
+# customer-facing prod agent.
+HERMES_APPROVALS_MODE = "off"
+HERMES_FULCRUM_MCP_ENABLED = "true"
+FULCRUM_MCP_URL = "https://fulcrum-acme.divinci.ai/mcp"
+# ⚠️ INVARIANT: this MUST stay longer than the Divinci keepalive probe interval
+# (`*/10 * * * *` in server/workspace/workers/connector-sync-worker). A
+# SOCKET-mode Slack agent keeps its Slack connection inside the container, so a
+# sleep is not a pause — the container is REPLACED, loses its Slack config, and
+# the sweep re-pushes it, which restarts the gateway and posts "Gateway shutting
+# down" into the customer's channel.
+#
+# The 5m default (hermesContainer.ts) was chosen for HTTP on-demand agents,
+# where waking per turn is the whole point. With a 10-minute probe it means the
+# container is ALWAYS asleep when probed: every tick churns a container instead
+# of keeping one warm. Observed 2026-08-08 as Slack #standup spam on an exact
+# 10-minute cadence (4:55, 5:07, 5:17, 5:27, 5:37).
+#
+# 30m restores the pre-2026-08-07 window for this Worker only. Staging stays at
+# the 5m default deliberately — it runs no socket-mode agent, so it gets the
+# cheaper profile.
+HERMES_SLEEP_AFTER = "30m"
 
 # ─── Durable Object that owns the Hermes container ──────────────────
 [[durable_objects.bindings]]
