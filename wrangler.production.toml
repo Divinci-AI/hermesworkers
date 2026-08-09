@@ -50,8 +50,13 @@ FULCRUM_MCP_URL = "https://fulcrum-acme.divinci.ai/mcp"
 # The 5m default (hermesContainer.ts) was chosen for HTTP on-demand agents,
 # where waking per turn is the whole point. With a 10-minute probe it means the
 # container is ALWAYS asleep when probed: every tick churns a container instead
-# of keeping one warm. Observed 2026-08-08 as Slack #standup spam on an exact
-# 10-minute cadence (4:55, 5:07, 5:17, 5:27, 5:37).
+# of keeping one warm. That is arithmetic, and it is the reason for this
+# setting.
+#
+# ⚠️ It is NOT backed by the Slack-spam cadence originally claimed here
+# ("4:55, 5:07, 5:17, 5:27, 5:37"). A later search found three "Gateway shutting
+# down" messages across five days, not a 10-minute series — those timestamps
+# were inferred from the cron schedule, not read off Slack.
 #
 # 30m restores the pre-2026-08-07 window for this Worker only. Staging stays at
 # the 5m default deliberately — it runs no socket-mode agent, so it gets the

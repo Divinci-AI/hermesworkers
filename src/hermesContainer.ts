@@ -30,8 +30,10 @@ export class HermesInstance extends Sandbox {
   // exceeds this window. Divinci probes every 10 minutes, so at 5m the
   // container is always asleep when probed: each tick REPLACES it, the Slack
   // config is lost, the sweep re-pushes it, and the gateway restart announces
-  // itself in the customer's Slack channel. Observed 2026-08-08 on an exact
-  // 10-minute cadence. `wrangler.production.toml` therefore sets 30m.
+  // itself in the customer's Slack channel. `wrangler.production.toml` sets 30m
+  // for that reason. (An earlier note here claimed this was observed on an
+  // exact 10-minute Slack cadence; it was not — Slack's record shows three such
+  // messages in five days. The arithmetic is the evidence, not that.)
   //
   // The invariant to preserve is a relationship, not a number: this window must
   // be LONGER than the keepalive interval of whatever polls the container.
