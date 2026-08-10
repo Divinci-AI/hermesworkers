@@ -35,9 +35,30 @@ HERMES_PLATFORM_CLI_ENABLED = "true"
 # Terminal MCP + Fulcrum (dogfood). FULCRUM_API_TOKEN is a secret — never a var.
 # ⚠️ Fulcrum token = code execution on the Fulcrum host. Keep prod dogfood-only.
 HERMES_TERMINAL_ENABLED = "true"
-# Divinci dogfood Slack (divinciai.slack.com): always-allow. Revisit before any
-# customer-facing prod agent.
-HERMES_APPROVALS_MODE = "off"
+# Approvals: MANUAL in production. Every tool call prompts in Slack.
+#
+# This was "off" (YOLO) from 2026-08-07, for a stated reason that does not apply
+# to this agent: the Slack Allow buttons are flaky on **HTTP Events** mode. The
+# production agent runs SOCKET mode, where they work.
+#
+# What "off" actually meant, once inbound email landed on 2026-08-09: anyone who
+# could send mail to hermes@divinci.app could cause an unattended turn — with
+# HERMES_TERMINAL_ENABLED and a Fulcrum MCP connection that is code execution on
+# the Fulcrum host — and no human in the loop at any point. The email sender
+# allowlist authorises a `From` header, which is free text; DMARC verification
+# now authenticates it (divinci-hermes-email-receiver/src/dmarc.ts), but
+# authentication is not authorisation. An account we trust can still be
+# compromised, and prompt-injected content read by an unattended agent is the
+# textbook case for keeping a human on the tool call.
+#
+# `runHermesTurn` sends only {messages, model} — there is no per-request toolset
+# restriction available — so approvals ARE the toolset control for the email
+# path. That is why this is set here rather than solved at the call site.
+#
+# Cost, stated plainly: interactive Slack turns now need an Allow click.
+# Staging keeps "off" for frictionless dogfooding, where no inbound email
+# endpoint is wired.
+HERMES_APPROVALS_MODE = "manual"
 HERMES_FULCRUM_MCP_ENABLED = "true"
 FULCRUM_MCP_URL = "https://fulcrum-acme.divinci.ai/mcp"
 # ⚠️ INVARIANT: this MUST stay longer than the Divinci keepalive probe interval
