@@ -27,6 +27,34 @@ enabled = true
 # in src/lib/terminal.ts (package registries + forges).
 [vars]
 EGRESS_ALLOWED_HOSTS = "github.com,codeload.github.com,objects.githubusercontent.com,raw.githubusercontent.com,gitlab.com,registry.npmjs.org,pypi.org,files.pythonhosted.org,crates.io,static.crates.io,proxy.golang.org"
+# Opt-in whole-container egress widenings (see src/lib/terminal.ts). Binaries
+# (gws/gcloud/wrangler) are in the image regardless; these flags only open the
+# API hosts. Staging dogfood: both on.
+HERMES_WORKSPACE_CLI_ENABLED = "true"
+HERMES_PLATFORM_CLI_ENABLED = "true"
+# Bounded terminal MCP + Fulcrum remote MCP (Divinci dogfood). Token is a
+# wrangler secret: `echo -n "$TOKEN" | wrangler secret put FULCRUM_API_TOKEN -c wrangler.staging.toml`
+HERMES_TERMINAL_ENABLED = "true"
+# Dogfood: skip Slack approval popups (Allow Once/Session/Always Allow). YOLO.
+# Do NOT copy to customer multi-tenant without re-evaluating credential risk.
+HERMES_APPROVALS_MODE = "off"
+HERMES_FULCRUM_MCP_ENABLED = "true"
+FULCRUM_MCP_URL = "https://fulcrum-acme.divinci.ai/mcp"
+# Drop the built-in toolsets that execute as the credential-owning uid.
+#
+# `read_file(path="~/.hermes/.env")` is a ONE-CALL credential read that passes
+# every control: approvals.mode is a shell-command gate (and is "off" here
+# anyway), and file_tools' sensitive-path check is wired only into the write
+# and patch handlers, never reads.
+#
+# Shell and file work still exist — they move to the bounded terminal
+# (HERMES_TERMINAL_ENABLED above), which runs as uid 10002, cannot read
+# ~/.hermes/, and is egress-allowlisted. Both verified in production
+# 2026-08-14.
+#
+# Costs `patch` and `process` (no bounded equivalent) and file access outside
+# /workspace. Staging first — production stays unset until this is proven here.
+HERMES_DISABLED_TOOLSETS = "terminal,file"
 
 # ─── Durable Object that owns the Hermes container ──────────────────
 [[durable_objects.bindings]]

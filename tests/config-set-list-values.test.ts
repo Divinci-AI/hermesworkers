@@ -100,3 +100,53 @@ describe("divinci_terminal: registered with a real list", () => {
     expect(startHermes).not.toMatch(/cat > "\$MCP_CFG"/);
   });
 });
+
+describe("disabled_toolsets: the built-in credential-owning tools", () => {
+  const staging = readFileSync(
+    join(__dirname, "..", "wrangler.staging.toml"),
+    "utf8",
+  );
+  const production = readFileSync(
+    join(__dirname, "..", "wrangler.production.toml"),
+    "utf8",
+  );
+
+  it("writes agent.disabled_toolsets as YAML, with a read-back type assertion", () => {
+    // Fourth list-valued key in this script. `hermes config set` would store a
+    // string and gateway/run.py's `agent_cfg.get("disabled_toolsets")` would
+    // then hand a string to the toolset resolver — the same silent no-op that
+    // disabled the plugin and the bounded terminal.
+    expect(startHermes).toContain('agent["disabled_toolsets"] = wanted');
+    expect(startHermes).toContain("ok = isinstance(got, list) and got == wanted");
+  });
+
+  it("preserves other keys in the `agent` section", () => {
+    expect(startHermes).toContain('agent = cfg.get("agent")');
+    expect(startHermes).toContain("if not isinstance(agent, dict):");
+  });
+
+  it("is opt-in — an environment that does not set it is unchanged", () => {
+    // The blast radius control. This removes tools from the INTERACTIVE path,
+    // so it must never switch itself on by default.
+    expect(startHermes).toMatch(/if \[ -n "\$\{HERMES_DISABLED_TOOLSETS:-\}" \]; then/);
+    expect(startHermes).toContain("disabled_toolsets=UNSET");
+  });
+
+  it("staging carries it and production does NOT (yet)", () => {
+    // Staging-first was the explicit decision. If this ever fails because
+    // production gained the var, that is fine — delete the assertion in the
+    // same commit that ships it, having verified Slack on staging first.
+    expect(staging).toMatch(/HERMES_DISABLED_TOOLSETS\s*=\s*"terminal,file"/);
+    expect(production).not.toMatch(/^\s*HERMES_DISABLED_TOOLSETS/m);
+  });
+
+  it("does not disable the BOUNDED terminal along with the built-in one", () => {
+    // `terminal` here is Hermes' built-in toolset. The bounded terminal is an
+    // MCP server (divinci_terminal) and is registered separately — disabling
+    // the built-in must not take it down, or the change removes the capability
+    // instead of re-routing it, which is the difference between hardening and
+    // breaking.
+    expect(staging).toMatch(/HERMES_TERMINAL_ENABLED\s*=\s*"true"/);
+    expect(startHermes).toContain('servers["divinci_terminal"]');
+  });
+});

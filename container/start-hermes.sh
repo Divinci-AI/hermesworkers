@@ -249,6 +249,79 @@ ALEOF
 fi
 echo "[startup] approvals.mode=${APPROVALS_MODE}" >> "$LOG_FILE"
 
+# ── Remove built-in toolsets that run as the CREDENTIAL-OWNING uid ─────────
+#
+# The comment further down used to claim "Hermes' own command execution is
+# disabled above". It was not — nothing disabled it, and `approvals.mode` does
+# not, because that is a SHELL COMMAND gate with exactly two consumers
+# (check_all_command_guards, check_execute_code_guard).
+#
+# The real exposure is not the terminal, it is `read_file`. Slack's default
+# toolset `hermes-slack` carries the whole `file` toolset — read_file,
+# write_file, patch, search_files — and those are BUILT-INS, so they run as
+# `hermes`, the uid that owns ~/.hermes/. Therefore:
+#
+#     read_file(path="~/.hermes/.env")
+#
+# returns every provider credential in ONE call, with no approval prompt and no
+# dangerous-pattern match. `file_tools.py` does have a sensitive-path system —
+# it even refuses to overwrite config.yaml so an injected agent cannot turn
+# approvals off — but both of its call sites are in the WRITE and PATCH
+# handlers. Reads are unchecked, and `.env` is not on the list anyway.
+#
+# This is a strictly simpler form of the 2026-07-27 incident and it survives
+# every control added since.
+#
+# Capability is not being removed, only re-routed: the bounded terminal
+# (divinci_terminal, below) supplies terminal_exec / read_file / write_file /
+# list_files / git_clone as uid 10002, confined to /workspace, with iptables
+# egress allowlisting. Both halves verified in production 2026-08-14 —
+# `.env` and `config.yaml` DENIED to that uid, and example.com / api.openai.com
+# unreachable while npm and github resolve. The two controls compose: the uid
+# that can reach the network is the one that cannot read the secrets.
+#
+# Known losses: `patch` and `process` have no bounded equivalent, and file
+# access outside /workspace goes away.
+#
+# ⚠️ LIST-VALUED, so it is written as YAML — `hermes config set` would store a
+# string, which is the bug that silently disabled the plugin AND the bounded
+# terminal. Read back and log the parsed type.
+#
+# Unset by default: an environment that does not opt in behaves exactly as
+# before. Staging carries it first.
+if [ -n "${HERMES_DISABLED_TOOLSETS:-}" ]; then
+  /opt/hermes-venv/bin/python - "$HOME_DIR/.hermes/config.yaml" "${HERMES_DISABLED_TOOLSETS}" <<'DTEOF' >> "$LOG_FILE" 2>&1 || true
+import sys, pathlib, yaml
+p = pathlib.Path(sys.argv[1])
+wanted = [t.strip() for t in sys.argv[2].split(",") if t.strip()]
+try:
+    cfg = yaml.safe_load(p.read_text()) if p.exists() else {}
+except Exception as e:
+    print(f"[startup] disabled_toolsets: config unreadable ({e}) — NOT applied")
+    raise SystemExit(0)
+if not isinstance(cfg, dict):
+    cfg = {}
+# gateway/run.py reads `agent.disabled_toolsets`; preserve the rest of `agent`.
+agent = cfg.get("agent")
+if not isinstance(agent, dict):
+    agent = {}
+agent["disabled_toolsets"] = wanted
+cfg["agent"] = agent
+p.parent.mkdir(parents=True, exist_ok=True)
+p.write_text(yaml.safe_dump(cfg, default_flow_style=False, sort_keys=False))
+
+check = yaml.safe_load(p.read_text()) or {}
+got = (check.get("agent") or {}).get("disabled_toolsets")
+ok = isinstance(got, list) and got == wanted
+print(
+    f"[startup] disabled_toolsets={'OK' if ok else 'FAILED'} "
+    f"type={type(got).__name__} value={got!r}"
+)
+DTEOF
+else
+  echo "[startup] disabled_toolsets=UNSET — built-in terminal/file tools remain available" >> "$LOG_FILE"
+fi
+
 # ── Unattended-turn tool guard ─────────────────────────────────────────────
 #
 # ⚠️ approvals.mode above does NOT gate MCP tool calls. It is consumed by
@@ -338,10 +411,18 @@ else
 fi
 
 # ── Give the agent the BOUNDED terminal via MCP ────────────────────────────
-# Hermes' own command execution is disabled above because it runs as the
-# credential-owning uid. That would leave the agent unable to run anything at
-# all, so register the bounded terminal as an MCP server instead: same
-# capability, routed THROUGH the security boundary rather than around it.
+# Hermes' own command execution runs as the credential-owning uid, so the agent
+# gets the bounded terminal as an MCP server instead: same capability, routed
+# THROUGH the security boundary rather than around it.
+#
+# ⚠️ This comment used to assert that Hermes' own command execution "is
+# disabled above". It was not, and had never been — nothing in this script
+# disabled it, and `approvals.mode` cannot, being a shell-command gate. The
+# claim was load-bearing in the worst way: it made the built-in terminal and
+# `read_file` look already-handled, so nobody looked at them for months.
+# Disabling them is `HERMES_DISABLED_TOOLSETS` above, and it is opt-in per
+# environment — so on an environment that has not set it, they ARE still
+# available, and this comment must not imply otherwise.
 #
 # Every tool it exposes executes as hermes-term (uid 10002) via the narrow
 # sudo grant — a user that cannot read ~/.hermes/, starts from an empty
