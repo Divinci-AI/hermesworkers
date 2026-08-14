@@ -33,3 +33,7 @@ yarn-debug.log*
 # Test artifacts
 coverage/
 .nyc_output/
+
+# Python bytecode from the container plugins
+__pycache__/
+*.pyc
