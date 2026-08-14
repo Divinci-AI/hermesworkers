@@ -195,13 +195,147 @@ fi
 # iptables-enforced egress allowlist. That is the supported path, and it is
 # contained by construction rather than by an LLM's risk judgement.
 #
-# `manual` + `cron_mode=deny` is belt and braces: manual always prompts, and a
-# prompt with no interactive user times out to DENY (Hermes fails closed).
-hermes config set approvals.mode manual || true
+# Approval modes (Hermes docs):
+#   manual — always prompt (Slack buttons: Allow Once / Session / Always Allow)
+#   smart  — LLM risk score auto-approves "low risk" (unsafe for hosted: no human)
+#   off    — YOLO: no prompts (equivalent to /yolo). Use only in trusted dogfood.
+#
+# Default remains MANUAL for multi-tenant safety. Divinci dogfood (Fulcrum +
+# Slack) sets HERMES_APPROVALS_MODE=off so Slack "Allow" buttons are not required
+# — those buttons are flaky on HTTP Events (popup doesn't dismiss / session never
+# resumes). Override at boot: HERMES_APPROVALS_MODE=manual|smart|off.
+APPROVALS_MODE="${HERMES_APPROVALS_MODE:-manual}"
+case "${APPROVALS_MODE}" in
+  off|smart|manual) ;;
+  *) APPROVALS_MODE=manual ;;
+esac
+hermes config set approvals.mode "${APPROVALS_MODE}" || true
 hermes config set approvals.cron_mode deny || true
-# Empty the allowlist explicitly — a permanently-approved pattern would bypass
-# the above entirely.
-hermes config set command_allowlist "[]" || true
+# Empty the allowlist when locking down. When mode=off the list is unused.
+#
+# ⚠️ THIRD instance of the config-set-list bug (see divinci_terminal below).
+# `hermes config set command_allowlist "[]"` stored the two-character STRING
+# "[]", and `load_permanent_allowlist()` does `set(config.get(...) or [])` —
+# so `set("[]")` produced the allowlist `{"[", "]"}` rather than an empty one.
+#
+# Measured, before assuming the worst: the effect is benign. Those two
+# patterns match only the literal commands `[` and `]`; `ls`, `rm -rf /` and
+# `base64 ~/.hermes/.env` are all still unapproved, and the truthy value only
+# means `load_permanent()` is called with a pair of useless entries. So this
+# never opened a hole — but it is the same latent defect, and the day someone
+# sets a REAL allowlist through this line it would be parsed character by
+# character. Write the list properly instead.
+if [ "${APPROVALS_MODE}" = "manual" ] || [ "${APPROVALS_MODE}" = "smart" ]; then
+  /opt/hermes-venv/bin/python - "$HOME_DIR/.hermes/config.yaml" <<'ALEOF' >> "$LOG_FILE" 2>&1 || true
+import sys, pathlib, yaml
+p = pathlib.Path(sys.argv[1])
+try:
+    cfg = yaml.safe_load(p.read_text()) if p.exists() else {}
+except Exception as e:
+    print(f"[startup] command_allowlist: config unreadable ({e}) — NOT cleared")
+    raise SystemExit(0)
+if not isinstance(cfg, dict):
+    cfg = {}
+cfg["command_allowlist"] = []
+p.parent.mkdir(parents=True, exist_ok=True)
+p.write_text(yaml.safe_dump(cfg, default_flow_style=False, sort_keys=False))
+check = yaml.safe_load(p.read_text()) or {}
+got = check.get("command_allowlist")
+print(
+    f"[startup] command_allowlist={'OK' if isinstance(got, list) and not got else 'FAILED'} "
+    f"type={type(got).__name__} value={got!r}"
+)
+ALEOF
+fi
+echo "[startup] approvals.mode=${APPROVALS_MODE}" >> "$LOG_FILE"
+
+# ── Unattended-turn tool guard ─────────────────────────────────────────────
+#
+# ⚠️ approvals.mode above does NOT gate MCP tool calls. It is consumed by
+# exactly two callers in hermes-agent v2026.7.7.2 —
+# check_all_command_guards (tools/terminal_tool.py) and
+# check_execute_code_guard (tools/code_execution_tool.py). MCP calls dispatch
+# through model_tools.py, whose ONLY gate is a plugin `pre_tool_call` hook.
+#
+# So an inbound email could reach Fulcrum's execute_command / write_file — on
+# the FULCRUM host, outside every boundary this image builds — with no human
+# anywhere in the loop. Observed live 2026-08-14T05:32Z.
+#
+# This plugin is the fix, and the only mechanism Hermes offers for it. It
+# allows the full toolset on interactive Slack turns
+# (HERMES_SESSION_PLATFORM=slack) and restricts unattended API-server turns
+# (the email path) to a read-and-file allowlist. See plugins/
+# divinci_email_guard/policy.py for the source-level reasoning.
+#
+# Re-installed from the root-owned staging copy on EVERY boot, so a modified
+# copy under ~/.hermes cannot persist across a restart.
+GUARD_SRC="/usr/local/share/divinci-hermes-plugins/divinci_email_guard"
+# Derive both paths from HOME_DIR, the same base every other path in this
+# script uses. HERMES_HOME is NOT set in the image (only HOME is), so reading
+# it here would work only by falling through to a hardcoded default — which
+# silently diverges the moment a profile sets it.
+GUARD_DEST="$HOME_DIR/.hermes/plugins/divinci_email_guard"
+HERMES_CFG="$HOME_DIR/.hermes/config.yaml"
+if [ -d "$GUARD_SRC" ]; then
+  mkdir -p "$(dirname "$GUARD_DEST")"
+  rm -rf "$GUARD_DEST"
+  cp -R "$GUARD_SRC" "$GUARD_DEST"
+  # ⚠️ A user plugin is INERT unless its key is in plugins.enabled, and the
+  # only trace of a skipped plugin is a DEBUG line. Installing the files
+  # without this yields a guard that appears present and enforces nothing.
+  #
+  # ⚠️ WRITTEN AS YAML DIRECTLY, NOT VIA `hermes config set`. The loader
+  # requires a LIST — `_get_enabled_plugins()` does `isinstance(enabled, list)`
+  # and returns None (meaning "nothing enabled") for anything else. A
+  # `hermes config set plugins.enabled '["x"]'` stored the value as a STRING,
+  # so the key was present, the command reported success, and every plugin
+  # silently stayed off. That is what happened on 2026-08-14: the boot log said
+  # "installed + enabled" while the guard was never loaded, and the mistake was
+  # only caught because a terminal command that should have been refused ran.
+  #
+  # This writes the key with the YAML parser Hermes itself uses, then READS IT
+  # BACK and logs the parsed type. A log line that reports what was attempted
+  # rather than what is true is worse than no log line at all.
+  /opt/hermes-venv/bin/python - "$HERMES_CFG" <<'PYEOF' >> "$LOG_FILE" 2>&1 || true
+import sys, pathlib, yaml
+p = pathlib.Path(sys.argv[1])
+try:
+    cfg = yaml.safe_load(p.read_text()) if p.exists() else {}
+except Exception as e:
+    print(f"[startup] divinci_email_guard: config unreadable ({e}) — NOT enabled")
+    raise SystemExit(0)
+if not isinstance(cfg, dict):
+    cfg = {}
+plugins = cfg.get("plugins")
+if not isinstance(plugins, dict):
+    plugins = {}
+enabled = plugins.get("enabled")
+if not isinstance(enabled, list):
+    enabled = []
+if "divinci_email_guard" not in enabled:
+    enabled.append("divinci_email_guard")
+plugins["enabled"] = enabled
+cfg["plugins"] = plugins
+p.parent.mkdir(parents=True, exist_ok=True)
+p.write_text(yaml.safe_dump(cfg, default_flow_style=False, sort_keys=False))
+
+# Read back from disk — never trust the write we just made.
+check = yaml.safe_load(p.read_text()) or {}
+got = (check.get("plugins") or {}).get("enabled")
+ok = isinstance(got, list) and "divinci_email_guard" in got
+print(
+    f"[startup] divinci_email_guard enabled={'OK' if ok else 'FAILED'} "
+    f"type={type(got).__name__} value={got!r}"
+)
+PYEOF
+  echo "[startup] divinci_email_guard files installed" >> "$LOG_FILE"
+else
+  # Loud, because the alternative is an unattended path silently running
+  # unguarded. Not fatal: Slack-only deployments are still useful, and a
+  # container that refuses to boot is a worse failure than one that boots
+  # with a recorded warning.
+  echo "[startup] WARNING: divinci_email_guard NOT FOUND at ${GUARD_SRC} — unattended turns are UNGUARDED" >> "$LOG_FILE"
+fi
 
 # ── Give the agent the BOUNDED terminal via MCP ────────────────────────────
 # Hermes' own command execution is disabled above because it runs as the
@@ -217,20 +351,140 @@ hermes config set command_allowlist "[]" || true
 # boundary (setup-terminal.sh not run, or NET_ADMIN unavailable) does not
 # advertise tools that would fail on every call.
 if [ "${HERMES_TERMINAL_ENABLED:-false}" = "true" ]; then
-  MCP_CFG="$HOME_DIR/.hermes/mcp-terminal.yaml"
-  cat > "$MCP_CFG" <<'MCPEOF'
-mcp_servers:
-  divinci_terminal:
-    command: "node"
-    args: ["/usr/local/bin/mcp-terminal-server.js"]
-    enabled: true
-    timeout: 620
+  # ⚠️ WRITTEN AS YAML DIRECTLY, NOT VIA `hermes config set` — the SAME bug
+  # that silently disabled the plugin above, and it had been breaking this
+  # server since it was written.
+  #
+  # `set_config_value` coerces only booleans, ints and floats; there is no
+  # JSON parsing. So
+  #     hermes config set mcp_servers.divinci_terminal.args '["/usr/.../x.js"]'
+  # stored the literal STRING `["/usr/local/bin/mcp-terminal-server.js"]`.
+  # `mcp_tool.py` then reads `args = config.get("args", [])` and splats it —
+  # `[command, *args]` — which iterates a string CHARACTER BY CHARACTER. node
+  # was being launched with `[` as its script path and 41 more one-character
+  # arguments, so it died instantly and the connection closed.
+  #
+  # That produced 1,472 log lines of
+  #     MCP server 'divinci_terminal' failed initial connection ... TaskGroup
+  # and, far worse, it silently removed the terminal BOUNDARY: the agent kept
+  # working because Hermes' BUILT-IN terminal still ran — as `hermes`, the uid
+  # that owns every provider credential. The safe path was down and the unsafe
+  # one was carrying the traffic.
+  #
+  # The former `~/.hermes/mcp-terminal.yaml` sidecar written here was inert;
+  # Hermes reads config.yaml, so it was never merged and only made the real
+  # failure harder to see. Deleted rather than left as a decoy.
+  rm -f "$HOME_DIR/.hermes/mcp-terminal.yaml"
+  /opt/hermes-venv/bin/python - "$HOME_DIR/.hermes/config.yaml" <<'MCPEOF' >> "$LOG_FILE" 2>&1 || true
+import sys, pathlib, yaml
+p = pathlib.Path(sys.argv[1])
+SERVER = "/usr/local/bin/mcp-terminal-server.js"
+try:
+    cfg = yaml.safe_load(p.read_text()) if p.exists() else {}
+except Exception as e:
+    print(f"[startup] divinci_terminal: config unreadable ({e}) — NOT registered")
+    raise SystemExit(0)
+if not isinstance(cfg, dict):
+    cfg = {}
+servers = cfg.get("mcp_servers")
+if not isinstance(servers, dict):
+    servers = {}
+# Replace this server's entry wholesale (it is ours), but preserve every other
+# server — fulcrum is registered separately and must survive.
+servers["divinci_terminal"] = {
+    "command": "node",
+    "args": [SERVER],
+    "enabled": True,
+    "timeout": 620,
+}
+cfg["mcp_servers"] = servers
+p.parent.mkdir(parents=True, exist_ok=True)
+p.write_text(yaml.safe_dump(cfg, default_flow_style=False, sort_keys=False))
+
+# Read back from disk and assert the TYPE — the whole failure was a value that
+# was present, well-formed to the eye, and of the wrong type. A log line
+# reporting what we attempted rather than what is true is what let this run for
+# months.
+check = yaml.safe_load(p.read_text()) or {}
+got = ((check.get("mcp_servers") or {}).get("divinci_terminal") or {}).get("args")
+ok = isinstance(got, list) and got == [SERVER]
+print(
+    f"[startup] divinci_terminal args={'OK' if ok else 'FAILED'} "
+    f"type={type(got).__name__} value={got!r}"
+)
 MCPEOF
-  # `hermes mcp add` is interactive; write the config and let Hermes merge it.
-  hermes config set mcp_servers.divinci_terminal.command node || true
-  hermes config set mcp_servers.divinci_terminal.args '["/usr/local/bin/mcp-terminal-server.js"]' || true
-  hermes config set mcp_servers.divinci_terminal.enabled true || true
   echo "[startup] registered divinci_terminal MCP server (bounded terminal)" >> "$LOG_FILE"
+fi
+
+# ── Fulcrum MCP (remote HTTP) ───────────────────────────────────────────────
+#
+# Divinci dogfood only. Fulcrum exposes ~130 tools including execute_command /
+# write_file — a token is code execution on the Fulcrum host. Gated off unless
+# HERMES_FULCRUM_MCP_ENABLED=true and never intended for multi-tenant customer
+# agents.
+#
+# Hermes resolves ${env:VAR} in headers from ~/.hermes/.env (written above), so
+# the token never needs to be interpolated into config.yaml as plaintext in a
+# loggable config-set argv. Optional CF Access service-token headers for when
+# Access is enforced on fulcrum-acme.divinci.ai.
+if [ "${HERMES_FULCRUM_MCP_ENABLED:-false}" = "true" ] || [ "${HERMES_FULCRUM_MCP_ENABLED:-}" = "1" ]; then
+  FULCRUM_URL="${FULCRUM_MCP_URL:-https://fulcrum-acme.divinci.ai/mcp}"
+  # Materialize token into the hermes env file (0600) for ${env:FULCRUM_API_TOKEN}.
+  if [ -n "${FULCRUM_API_TOKEN:-}" ]; then
+    # Drop any prior line then append (idempotent across soft restarts).
+    if [ -f "$HERMES_ENV_FILE" ]; then
+      grep -vE '^FULCRUM_API_TOKEN=' "$HERMES_ENV_FILE" > "${HERMES_ENV_FILE}.nofulcrum" 2>/dev/null \
+        || cp "$HERMES_ENV_FILE" "${HERMES_ENV_FILE}.nofulcrum"
+      cat "${HERMES_ENV_FILE}.nofulcrum" > "$HERMES_ENV_FILE"
+      rm -f "${HERMES_ENV_FILE}.nofulcrum"
+    fi
+    printf 'FULCRUM_API_TOKEN=%s\n' "${FULCRUM_API_TOKEN}" >> "$HERMES_ENV_FILE"
+    chmod 600 "$HERMES_ENV_FILE"
+  fi
+  if [ -n "${FULCRUM_CF_ACCESS_CLIENT_ID:-}" ] && [ -n "${FULCRUM_CF_ACCESS_CLIENT_SECRET:-}" ]; then
+    printf 'FULCRUM_CF_ACCESS_CLIENT_ID=%s\n' "${FULCRUM_CF_ACCESS_CLIENT_ID}" >> "$HERMES_ENV_FILE"
+    printf 'FULCRUM_CF_ACCESS_CLIENT_SECRET=%s\n' "${FULCRUM_CF_ACCESS_CLIENT_SECRET}" >> "$HERMES_ENV_FILE"
+    chmod 600 "$HERMES_ENV_FILE"
+  fi
+
+  # Write a snippet Hermes can merge; hermes config set for scalar fields.
+  # Never echo the token. URL only in logs.
+  hermes config set mcp_servers.fulcrum.url "${FULCRUM_URL}" >> "$LOG_FILE" 2>&1 || true
+  hermes config set mcp_servers.fulcrum.enabled true >> "$LOG_FILE" 2>&1 || true
+  hermes config set mcp_servers.fulcrum.timeout 120 >> "$LOG_FILE" 2>&1 || true
+  hermes config set mcp_servers.fulcrum.connect_timeout 30 >> "$LOG_FILE" 2>&1 || true
+  # Fulcrum's GET/HEAD returns SPA HTML (or CF Access HTML). Hermes preflight
+  # then refuses the server; skip it — the Streamable HTTP POST is valid.
+  hermes config set mcp_servers.fulcrum.skip_preflight true >> "$LOG_FILE" 2>&1 || true
+  # Prefer ${env:} expansion so the secret stays in .env, not config.yaml.
+  if [ -n "${FULCRUM_API_TOKEN:-}" ]; then
+    hermes config set mcp_servers.fulcrum.headers.Authorization 'Bearer ${env:FULCRUM_API_TOKEN}' >> "$LOG_FILE" 2>&1 || true
+  fi
+  if [ -n "${FULCRUM_CF_ACCESS_CLIENT_ID:-}" ] && [ -n "${FULCRUM_CF_ACCESS_CLIENT_SECRET:-}" ]; then
+    hermes config set mcp_servers.fulcrum.headers.CF-Access-Client-Id '${env:FULCRUM_CF_ACCESS_CLIENT_ID}' >> "$LOG_FILE" 2>&1 || true
+    hermes config set mcp_servers.fulcrum.headers.CF-Access-Client-Secret '${env:FULCRUM_CF_ACCESS_CLIENT_SECRET}' >> "$LOG_FILE" 2>&1 || true
+  fi
+  # Also drop a durable yaml snippet (docs + recovery if config set partial-fails).
+  cat > "$HOME_DIR/.hermes/mcp-fulcrum.yaml" <<FULCRUMEOF
+# Generated by start-hermes.sh — do not commit. Token via \${env:FULCRUM_API_TOKEN}.
+mcp_servers:
+  fulcrum:
+    url: "${FULCRUM_URL}"
+    enabled: true
+    timeout: 120
+    connect_timeout: 30
+    skip_preflight: true
+    headers:
+      Authorization: "Bearer \${env:FULCRUM_API_TOKEN}"
+FULCRUMEOF
+  chmod 600 "$HOME_DIR/.hermes/mcp-fulcrum.yaml" 2>/dev/null || true
+  if [ -n "${FULCRUM_API_TOKEN:-}" ]; then
+    echo "[startup] registered fulcrum MCP -> ${FULCRUM_URL} (token=set)" >> "$LOG_FILE"
+  else
+    echo "[startup] registered fulcrum MCP -> ${FULCRUM_URL} (token=MISSING — tools may work if Fulcrum allows unauthenticated MCP)" >> "$LOG_FILE"
+  fi
+else
+  echo "[startup] fulcrum MCP NOT registered (HERMES_FULCRUM_MCP_ENABLED!=true)" >> "$LOG_FILE"
 fi
 
 # Optional defense in depth: drop the .env after the gateway is up, so even a
