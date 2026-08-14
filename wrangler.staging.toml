@@ -53,8 +53,19 @@ FULCRUM_MCP_URL = "https://fulcrum-acme.divinci.ai/mcp"
 # 2026-08-14.
 #
 # Costs `patch` and `process` (no bounded equivalent) and file access outside
-# /workspace. Staging first — production stays unset until this is proven here.
-HERMES_DISABLED_TOOLSETS = "terminal,file"
+# /workspace.
+#
+# ⛔ 2026-08-14: this denylist alone was NOT enough. A Slack smoke test read
+# ~/.hermes/.env anyway, via `execute_code` — a toolset it did not name. The
+# real control is now HERMES_SLACK_TOOLSETS below; this list is defence in
+# depth and has been widened to cover the execution toolsets too.
+HERMES_DISABLED_TOOLSETS = "terminal,debugging,file,code_execution,computer_use,cronjob,delegation,browser"
+# The ALLOWLIST is the real control (see start-hermes.sh). The denylist
+# above is defence in depth: if platform_toolsets fails to apply for any
+# reason, the execution toolsets are still subtracted. Today proved that
+# one mechanism silently not applying is the normal case here, not the
+# exception.
+HERMES_SLACK_TOOLSETS = "web,vision,image_gen,bfl,skills,memory,todo,clarify,session_search,kanban,tts"
 
 # ─── Durable Object that owns the Hermes container ──────────────────
 [[durable_objects.bindings]]

@@ -142,8 +142,15 @@ describe("disabled_toolsets: the built-in credential-owning tools", () => {
     // removed by deleting one line from a toml. Reverting it during an incident
     // may well be the right call — but it should be a decision someone makes,
     // not a diff nobody notices.
-    expect(staging).toMatch(/HERMES_DISABLED_TOOLSETS\s*=\s*"terminal,file"/);
-    expect(production).toMatch(/HERMES_DISABLED_TOOLSETS\s*=\s*"terminal,file"/);
+    // Asserts the PROPERTY, not the literal value. The first version pinned
+    // the exact string "terminal,file" and broke the moment that list was
+    // widened to include code_execution — a test that fails when the control
+    // gets STRONGER is a test that trains people to edit tests.
+    for (const cfg of [staging, production]) {
+      const value = cfg.match(/HERMES_DISABLED_TOOLSETS\s*=\s*"([^"]*)"/)?.[1];
+      expect(value).toBeTruthy();
+      expect(value!.split(",")).toEqual(expect.arrayContaining(["terminal", "file"]));
+    }
   });
 
   it("does not disable the BOUNDED terminal along with the built-in one", () => {
@@ -154,5 +161,83 @@ describe("disabled_toolsets: the built-in credential-owning tools", () => {
     // breaking.
     expect(staging).toMatch(/HERMES_TERMINAL_ENABLED\s*=\s*"true"/);
     expect(startHermes).toContain('servers["divinci_terminal"]');
+  });
+});
+
+describe("Slack toolset ALLOWLIST (the denylist was not enough)", () => {
+  const staging = readFileSync(join(__dirname, "..", "wrangler.staging.toml"), "utf8");
+  const production = readFileSync(join(__dirname, "..", "wrangler.production.toml"), "utf8");
+  const allowlists = [staging, production];
+
+  /**
+   * 2026-08-14: `disabled_toolsets="terminal,file"` shipped, and a Slack smoke
+   * test read ~/.hermes/.env anyway — via `execute_code`, a third toolset the
+   * denylist did not name. These assertions encode that failure so the same
+   * shape cannot come back.
+   */
+  it("names execute_code's toolset in every environment", () => {
+    // The specific tool that defeated the first attempt.
+    for (const cfg of allowlists) {
+      expect(cfg).toMatch(/HERMES_DISABLED_TOOLSETS\s*=\s*"[^"]*code_execution/);
+    }
+  });
+
+  it("grants Slack an explicit allowlist, not just a denylist", () => {
+    // The structural fix. A denylist has to be updated in lockstep with every
+    // upstream release to stay correct, and fails OPEN when it isn't.
+    for (const cfg of allowlists) {
+      expect(cfg).toMatch(/HERMES_SLACK_TOOLSETS\s*=\s*"[a-z_,]+"/);
+    }
+  });
+
+  it("keeps every execution-capable toolset OUT of the allowlist", () => {
+    // Enumerated from hermes-slack's tool list, not guessed: each of these
+    // either executes code or schedules/delegates work that later does.
+    const forbidden = [
+      "code_execution", "terminal", "debugging", "file",
+      "computer_use", "cronjob", "delegation", "browser",
+    ];
+    for (const cfg of allowlists) {
+      const allow = cfg.match(/HERMES_SLACK_TOOLSETS\s*=\s*"([^"]*)"/)?.[1] ?? "";
+      const entries = allow.split(",").map((s) => s.trim());
+      for (const bad of forbidden) expect(entries).not.toContain(bad);
+    }
+  });
+
+  it("still leaves Slack a usable agent", () => {
+    // The inverse. An allowlist of [] would satisfy every assertion above while
+    // making the agent useless — and "it refuses everything" and "it is
+    // correctly restricted" look identical from a Slack message.
+    for (const cfg of allowlists) {
+      const allow = cfg.match(/HERMES_SLACK_TOOLSETS\s*=\s*"([^"]*)"/)?.[1] ?? "";
+      const entries = allow.split(",").map((s) => s.trim()).filter(Boolean);
+      expect(entries.length).toBeGreaterThanOrEqual(8);
+      expect(entries).toContain("web");
+      expect(entries).toContain("memory");
+    }
+  });
+
+  it("does NOT disable the bounded terminal, which is an MCP server", () => {
+    // Toolsets do not govern MCP tools, so shell and file work survive the
+    // allowlist by design. If this ever fails, the change stopped re-routing
+    // capability and started removing it.
+    for (const cfg of allowlists) {
+      expect(cfg).toMatch(/HERMES_TERMINAL_ENABLED\s*=\s*"true"/);
+    }
+    expect(startHermes).toContain('servers["divinci_terminal"]');
+  });
+
+  it("writes platform_toolsets.slack as a real list, with a read-back", () => {
+    expect(startHermes).toContain('pt["slack"] = wanted');
+    expect(startHermes).toContain("ok = isinstance(got, list) and got == wanted");
+    // Other platforms must survive — this key is a dict of lists.
+    expect(startHermes).toContain('pt = cfg.get("platform_toolsets")');
+  });
+
+  it("prints the UNSET case, naming what stays available", () => {
+    // Same reason as disabled_toolsets: a silent absent case is
+    // indistinguishable from a working one.
+    expect(startHermes).toMatch(/platform_toolsets\.slack=UNSET/);
+    expect(startHermes).toMatch(/execute_code included/);
   });
 });

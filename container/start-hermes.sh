@@ -322,6 +322,76 @@ else
   echo "[startup] disabled_toolsets=UNSET — built-in terminal/file tools remain available" >> "$LOG_FILE"
 fi
 
+# ── Slack toolset ALLOWLIST ────────────────────────────────────────────────
+#
+# ⚠️ THE DENYLIST ABOVE IS NOT SUFFICIENT ON ITS OWN, and this is why.
+#
+# `disabled_toolsets="terminal,file"` shipped on 2026-08-14 to stop the agent
+# reading ~/.hermes/.env. A Slack smoke test read it anyway, in one turn, via
+# `execute_code` — a THIRD toolset (`code_execution`) that the denylist did not
+# name. Naming two more would not have fixed the shape: `hermes-slack` also
+# carries browser_exec, browser_cdp, computer_use, cronjob, delegate_task and
+# skill_manage.
+#
+# So this is an ALLOWLIST, for the same reason the email guard's
+# UNATTENDED_ALLOWED_TOOLS is one: a toolset added to Hermes tomorrow is denied
+# by default rather than silently inheriting access. A denylist has to be
+# updated in lockstep with every upstream release to stay correct, and fails
+# OPEN when it isn't.
+#
+# `gateway/run.py` reads `platform_toolsets.<platform>` per platform, so this
+# scopes Slack without touching any other path.
+#
+# What Slack keeps: web search/extract, vision, image + video generation,
+# skills, memory, todo, clarify, session_search, kanban, TTS — 32 tools — plus
+# every MCP tool, which toolsets do not govern. The bounded terminal
+# (divinci_terminal) is an MCP server, so shell and file work SURVIVE this,
+# routed through uid 10002 in /workspace.
+#
+# What it removes beyond the denylist: execute_code, computer_use, cronjob,
+# delegate_task, all browser_* and homeassistant. The browser tools are no loss
+# in practice — there is no browser binary in this image (checked 2026-08-14:
+# no chromium/chrome/playwright anywhere) — but they carry browser_exec and
+# browser_cdp, which are code execution and a plausible file-read path.
+# delegate_task is excluded because a sub-agent may resolve its own toolset,
+# which would route around everything here.
+#
+# Verified when composed: the resulting set grants NOTHING that hermes-slack
+# did not already have. An allowlist that accidentally widens is its own bug.
+#
+# ⚠️ LIST-VALUED (nested under a dict), so YAML, never `hermes config set`.
+if [ -n "${HERMES_SLACK_TOOLSETS:-}" ]; then
+  /opt/hermes-venv/bin/python - "$HOME_DIR/.hermes/config.yaml" "${HERMES_SLACK_TOOLSETS}" <<'PTEOF' >> "$LOG_FILE" 2>&1 || true
+import sys, pathlib, yaml
+p = pathlib.Path(sys.argv[1])
+wanted = [t.strip() for t in sys.argv[2].split(",") if t.strip()]
+try:
+    cfg = yaml.safe_load(p.read_text()) if p.exists() else {}
+except Exception as e:
+    print(f"[startup] platform_toolsets.slack: config unreadable ({e}) — NOT applied")
+    raise SystemExit(0)
+if not isinstance(cfg, dict):
+    cfg = {}
+pt = cfg.get("platform_toolsets")
+if not isinstance(pt, dict):
+    pt = {}
+pt["slack"] = wanted          # other platforms keep whatever they had
+cfg["platform_toolsets"] = pt
+p.parent.mkdir(parents=True, exist_ok=True)
+p.write_text(yaml.safe_dump(cfg, default_flow_style=False, sort_keys=False))
+
+check = yaml.safe_load(p.read_text()) or {}
+got = (check.get("platform_toolsets") or {}).get("slack")
+ok = isinstance(got, list) and got == wanted
+print(
+    f"[startup] platform_toolsets.slack={'OK' if ok else 'FAILED'} "
+    f"type={type(got).__name__} count={len(got) if isinstance(got, list) else 'n/a'} value={got!r}"
+)
+PTEOF
+else
+  echo "[startup] platform_toolsets.slack=UNSET — Slack keeps the FULL hermes-slack toolset (execute_code included)" >> "$LOG_FILE"
+fi
+
 # ── Unattended-turn tool guard ─────────────────────────────────────────────
 #
 # ⚠️ approvals.mode above does NOT gate MCP tool calls. It is consumed by

@@ -128,7 +128,25 @@ HERMES_APPROVALS_MODE = "manual"
 # calls — but staging CANNOT exercise the Slack path (no Slack config is pushed
 # to that agent), so this is the first environment where interactive turns meet
 # it. Revert = delete this line, redeploy, stop + boot-check.
-HERMES_DISABLED_TOOLSETS = "terminal,file"
+#
+# ⛔ CORRECTION 2026-08-14, from the Slack smoke test: a denylist naming
+# terminal+file was NOT sufficient. Hermes read ~/.hermes/.env in one turn via
+# `execute_code`, a THIRD toolset this did not name — and hermes-slack also
+# carries browser_exec, browser_cdp, computer_use, cronjob, delegate_task and
+# skill_manage. Naming more toolsets would not fix the SHAPE. The control is
+# now the ALLOWLIST in HERMES_SLACK_TOOLSETS below; this stays as defence in
+# depth, widened to subtract the execution toolsets.
+#
+# What DID hold during that test: approvals.mode=manual prompted before
+# execute_code ran, and Michael had to click Approve. That is a real gate — but
+# it is one click on a truncated snippet, and staging runs approvals=off.
+HERMES_DISABLED_TOOLSETS = "terminal,debugging,file,code_execution,computer_use,cronjob,delegation,browser"
+# The ALLOWLIST is the real control (see start-hermes.sh). The denylist
+# above is defence in depth: if platform_toolsets fails to apply for any
+# reason, the execution toolsets are still subtracted. Today proved that
+# one mechanism silently not applying is the normal case here, not the
+# exception.
+HERMES_SLACK_TOOLSETS = "web,vision,image_gen,bfl,skills,memory,todo,clarify,session_search,kanban,tts"
 HERMES_FULCRUM_MCP_ENABLED = "true"
 FULCRUM_MCP_URL = "https://fulcrum-acme.divinci.ai/mcp/observer"
 # ⚠️ INVARIANT: this MUST stay longer than the Divinci keepalive probe interval

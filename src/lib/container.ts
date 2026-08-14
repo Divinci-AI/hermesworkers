@@ -102,6 +102,16 @@ export interface Env {
   // Unset means unchanged, so an environment opts in explicitly.
   HERMES_DISABLED_TOOLSETS?: string;
 
+  // Comma-separated toolsets Slack is ALLOWED, written to
+  // `platform_toolsets.slack`. An allowlist, because the denylist above proved
+  // insufficient on its own: it named terminal+file, and a Slack turn still
+  // read ~/.hermes/.env through `execute_code` — a third toolset it did not
+  // name, alongside browser_exec, computer_use, cronjob and delegate_task.
+  //
+  // MCP tools are NOT governed by toolsets, so the bounded terminal survives
+  // this and keeps supplying shell/file work as uid 10002.
+  HERMES_SLACK_TOOLSETS?: string;
+
   // Fulcrum MCP (remote HTTP). Off unless "true". When enabled, start-hermes.sh
   // registers mcp_servers.fulcrum → FULCRUM_MCP_URL with optional Bearer token.
   // ⚠️ A Fulcrum API token is code execution on the Fulcrum host (execute_command
@@ -194,6 +204,9 @@ export function collectProviderKeys(env: Env): Record<string, string> {
   }
   if (env.HERMES_DISABLED_TOOLSETS) {
     keys.HERMES_DISABLED_TOOLSETS = env.HERMES_DISABLED_TOOLSETS;
+  }
+  if (env.HERMES_SLACK_TOOLSETS) {
+    keys.HERMES_SLACK_TOOLSETS = env.HERMES_SLACK_TOOLSETS;
   }
   if (env.HERMES_FULCRUM_MCP_ENABLED === "true" || env.HERMES_FULCRUM_MCP_ENABLED === "1") {
     keys.HERMES_FULCRUM_MCP_ENABLED = "true";
