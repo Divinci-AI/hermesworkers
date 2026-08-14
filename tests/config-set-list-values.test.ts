@@ -132,12 +132,18 @@ describe("disabled_toolsets: the built-in credential-owning tools", () => {
     expect(startHermes).toContain("disabled_toolsets=UNSET");
   });
 
-  it("staging carries it and production does NOT (yet)", () => {
-    // Staging-first was the explicit decision. If this ever fails because
-    // production gained the var, that is fine — delete the assertion in the
-    // same commit that ships it, having verified Slack on staging first.
+  it("both environments carry it", () => {
+    // Was "staging yes, production no" during the staged rollout. Production
+    // shipped 2026-08-14, after staging proved the mechanism: read_file absent
+    // rather than merely guard-blocked, bounded terminal intact, agent still
+    // completing real tool calls.
+    //
+    // Inverted rather than deleted. This is a security control that can be
+    // removed by deleting one line from a toml. Reverting it during an incident
+    // may well be the right call — but it should be a decision someone makes,
+    // not a diff nobody notices.
     expect(staging).toMatch(/HERMES_DISABLED_TOOLSETS\s*=\s*"terminal,file"/);
-    expect(production).not.toMatch(/^\s*HERMES_DISABLED_TOOLSETS/m);
+    expect(production).toMatch(/HERMES_DISABLED_TOOLSETS\s*=\s*"terminal,file"/);
   });
 
   it("does not disable the BOUNDED terminal along with the built-in one", () => {

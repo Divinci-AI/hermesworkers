@@ -51,16 +51,86 @@ HERMES_TERMINAL_ENABLED = "true"
 # compromised, and prompt-injected content read by an unattended agent is the
 # textbook case for keeping a human on the tool call.
 #
-# `runHermesTurn` sends only {messages, model} — there is no per-request toolset
-# restriction available — so approvals ARE the toolset control for the email
-# path. That is why this is set here rather than solved at the call site.
+# ⛔ CORRECTION 2026-08-14 — approvals are NOT the toolset control for the email
+# path, and this block previously claimed they were. Read at source in
+# NousResearch/hermes-agent v2026.7.7.2 (the tag container/Dockerfile pins):
+#
+#   * `approvals.mode` is consumed by exactly two callers —
+#     `check_all_command_guards` (tools/terminal_tool.py) and
+#     `check_execute_code_guard` (tools/code_execution_tool.py). It is a SHELL
+#     COMMAND gate.
+#   * MCP tool calls dispatch through model_tools.py, whose only gate is
+#     `resolve_pre_tool_block` → plugin `pre_tool_call` hooks.
+#   * `request_tool_approval` — the one generic tool gate — has a single caller:
+#     that plugin path.
+#   * container/start-hermes.sh registers NO plugins, so the hook returns no
+#     directive and MCP calls proceed ungated.
+#   * tools/mcp_tool.py carries approval logic only for ELICITATIONS (an MCP
+#     server questioning the user), never for the tool call itself.
+#   * Reads and writes take the identical path — the code draws no distinction.
+#
+# Observed live: the inbound email of 2026-08-14T05:32Z made a Fulcrum MCP call
+# in a 15s unattended turn with no Allow click. `write_file` / `execute_command`
+# would have passed identically, and those run on the FULCRUM host — outside
+# every container guard (hermes-term uid, egress allowlist) we rely on here.
+#
+# THE CONTROL IS THE TOOL SET, so it is applied there: FULCRUM_MCP_URL now
+# points at /mcp/observer, Fulcrum's hard-whitelisted transport. Verified
+# 2026-08-14 against the live server, not just its docs:
+#   - serverInfo fulcrum-observer 2.12.0; 12 tools vs 127 on /mcp
+#   - execute_command AND read_file both refused at DISPATCH
+#     ("-32602: Tool not found", isError:true) — not merely hidden from
+#     tools/list, which would be a claim about listing, not about blocking
+#   - list_tasks(tags:["gate3"]) returns real tasks with full descriptions
+#   - create_task PERSISTS projectId + dueDate + tags (probe task created,
+#     read back via REST, deleted, confirmed 404) — "accepts" is not "stores"
+#
+# ⚠️ COST, and it is not small: 115 of 127 tools go, including create_project,
+# get_task, list_projects, task dependencies and attachments. This var is
+# worker-level, so interactive Slack and unattended email share it and CANNOT
+# be told apart from config. Accepted deliberately: a human is present for
+# Slack turns and can do the missing steps by hand; nobody is present for mail.
+# The durable fix is a `pre_tool_call` plugin, the only mechanism that can
+# distinguish the two paths — `runHermesTurn` sends just {messages, model}.
+#
+# ⚠️ Do NOT "restore" /mcp here without shipping that plugin first.
+#
+# Approvals stay MANUAL: still the correct gate for Hermes' own shell, which is
+# what it actually governs.
 #
 # Cost, stated plainly: interactive Slack turns now need an Allow click.
 # Staging keeps "off" for frictionless dogfooding, where no inbound email
 # endpoint is wired.
 HERMES_APPROVALS_MODE = "manual"
+# Drop the BUILT-IN toolsets that execute as `hermes`, the uid owning every
+# provider credential in ~/.hermes/.
+#
+# The exposure this closes is `read_file`, not the terminal:
+#
+#     read_file(path="~/.hermes/.env")
+#
+# returned every provider key in ONE call. `approvals.mode = "manual"` above
+# does not gate it — that is a SHELL COMMAND gate with two consumers
+# (check_all_command_guards, check_execute_code_guard) and a tool call is not a
+# shell command. `file_tools.py`'s sensitive-path check does exist, and even
+# refuses to overwrite config.yaml so an injected agent cannot switch approvals
+# off, but both of its call sites are in the WRITE and PATCH handlers. Reads
+# were unchecked.
+#
+# Capability is re-routed, not removed: shell and file work go through the
+# bounded terminal (HERMES_TERMINAL_ENABLED), which runs as uid 10002, is
+# DENIED ~/.hermes/.env and config.yaml, and is egress-allowlisted. Both halves
+# verified in production 2026-08-14.
+#
+# Costs `patch` and `process` (no bounded equivalent) and file access outside
+# /workspace. Verified on staging first — read_file absent rather than merely
+# guard-blocked, bounded terminal intact, agent still completing real tool
+# calls — but staging CANNOT exercise the Slack path (no Slack config is pushed
+# to that agent), so this is the first environment where interactive turns meet
+# it. Revert = delete this line, redeploy, stop + boot-check.
+HERMES_DISABLED_TOOLSETS = "terminal,file"
 HERMES_FULCRUM_MCP_ENABLED = "true"
-FULCRUM_MCP_URL = "https://fulcrum-acme.divinci.ai/mcp"
+FULCRUM_MCP_URL = "https://fulcrum-acme.divinci.ai/mcp/observer"
 # ⚠️ INVARIANT: this MUST stay longer than the Divinci keepalive probe interval
 # (`*/10 * * * *` in server/workspace/workers/connector-sync-worker). A
 # SOCKET-mode Slack agent keeps its Slack connection inside the container, so a
