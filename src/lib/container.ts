@@ -75,6 +75,45 @@ export interface Env {
   // widens the container's egress allowlist to Google API hosts, so it is an
   // opt-in per deployment rather than a default.
   HERMES_WORKSPACE_CLI_ENABLED?: string;
+
+  // Platform CLIs (`gcloud`, `wrangler`) already in the image. Off unless
+  // "true". Enabling widens egress to GCP + Cloudflare API hosts (see
+  // PLATFORM_EGRESS_HOSTS). Prefer dogfood / internal agents; customer agents
+  // should stay closed until a short-lived token inject path exists.
+  HERMES_PLATFORM_CLI_ENABLED?: string;
+
+  // Virtual terminal MCP registration (divinci_terminal). Passed into the
+  // container at gateway boot so start-hermes.sh can advertise the bounded
+  // terminal tools. Worker-side terminal routes also gate on public-api flags.
+  HERMES_TERMINAL_ENABLED?: string;
+
+  // Hermes approvals.mode: manual | smart | off. Passed into start-hermes.sh.
+  // Dogfood uses "off" (always-allow / YOLO). Customer multi-tenant should stay
+  // "manual" so shell/execute_code cannot silently read ~/.hermes credentials.
+  HERMES_APPROVALS_MODE?: string;
+
+  // Comma-separated Hermes toolsets to remove, written to
+  // `agent.disabled_toolsets`. "terminal,file" drops the BUILT-IN tools that
+  // execute as the credential-owning `hermes` uid — notably `read_file`, which
+  // returns ~/.hermes/.env in one call and which approvals.mode does not gate
+  // (that is a shell-command gate). Shell and file work move to the bounded
+  // terminal, which runs as uid 10002 and cannot read those files.
+  //
+  // Unset means unchanged, so an environment opts in explicitly.
+  HERMES_DISABLED_TOOLSETS?: string;
+
+  // Fulcrum MCP (remote HTTP). Off unless "true". When enabled, start-hermes.sh
+  // registers mcp_servers.fulcrum → FULCRUM_MCP_URL with optional Bearer token.
+  // ⚠️ A Fulcrum API token is code execution on the Fulcrum host (execute_command
+  // etc.). Dogfood / Divinci-owned agents only — never enable for customer tenants.
+  HERMES_FULCRUM_MCP_ENABLED?: string;
+  /** Default: https://fulcrum-acme.divinci.ai/mcp */
+  FULCRUM_MCP_URL?: string;
+  /** fulc_… API token. Prefer wrangler secret put FULCRUM_API_TOKEN. */
+  FULCRUM_API_TOKEN?: string;
+  /** Optional CF Access service-token pair if Access starts requiring it. */
+  FULCRUM_CF_ACCESS_CLIENT_ID?: string;
+  FULCRUM_CF_ACCESS_CLIENT_SECRET?: string;
 }
 
 /**
@@ -143,6 +182,27 @@ export function collectProviderKeys(env: Env): Record<string, string> {
     keys.VERTEXAI_PROJECT = env.VERTEXAI_PROJECT;
     keys.VERTEXAI_LOCATION = env.VERTEXAI_LOCATION;
     keys.VERTEX_SA_JSON = env.VERTEX_SA_JSON;
+  }
+
+  // Feature flags + Fulcrum MCP — must reach start-hermes.sh via startProcess env
+  // (Worker [vars]/secrets do not automatically appear in the container process).
+  if (env.HERMES_TERMINAL_ENABLED) {
+    keys.HERMES_TERMINAL_ENABLED = env.HERMES_TERMINAL_ENABLED;
+  }
+  if (env.HERMES_APPROVALS_MODE) {
+    keys.HERMES_APPROVALS_MODE = env.HERMES_APPROVALS_MODE;
+  }
+  if (env.HERMES_DISABLED_TOOLSETS) {
+    keys.HERMES_DISABLED_TOOLSETS = env.HERMES_DISABLED_TOOLSETS;
+  }
+  if (env.HERMES_FULCRUM_MCP_ENABLED === "true" || env.HERMES_FULCRUM_MCP_ENABLED === "1") {
+    keys.HERMES_FULCRUM_MCP_ENABLED = "true";
+    if (env.FULCRUM_MCP_URL) keys.FULCRUM_MCP_URL = env.FULCRUM_MCP_URL;
+    if (env.FULCRUM_API_TOKEN) keys.FULCRUM_API_TOKEN = env.FULCRUM_API_TOKEN;
+    if (env.FULCRUM_CF_ACCESS_CLIENT_ID && env.FULCRUM_CF_ACCESS_CLIENT_SECRET) {
+      keys.FULCRUM_CF_ACCESS_CLIENT_ID = env.FULCRUM_CF_ACCESS_CLIENT_ID;
+      keys.FULCRUM_CF_ACCESS_CLIENT_SECRET = env.FULCRUM_CF_ACCESS_CLIENT_SECRET;
+    }
   }
 
   return keys;
