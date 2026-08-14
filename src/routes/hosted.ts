@@ -157,6 +157,62 @@ hosted.post('/hosted/agent/stop', async (c) => {
 });
 
 /**
+ * Destroy the container INSTANCE so the next boot pulls the current image.
+ *
+ * ⚠️ WHY `stop` IS NOT ENOUGH, AND WHY THIS ROUTE HAD TO EXIST.
+ *
+ * `/hosted/agent/stop` calls `killGateway`, which kills the Hermes PROCESS
+ * inside the container. The container instance — and its filesystem, from
+ * whatever image it was created with — survives. So `stop` + `boot-check`
+ * re-runs the OLD `/usr/local/bin/start-hermes.sh` from the OLD image.
+ *
+ * Env-var changes still apply on that path (they are injected at process
+ * start by `ensureGateway`, never baked in), which is exactly what makes this
+ * confusing: a `vars` change appears to prove the restart "worked", while an
+ * IMAGE change made in the same deploy silently does not land.
+ *
+ * Observed 2026-08-14: a deploy carrying a new Dockerfile layer and a modified
+ * start-hermes.sh reported success, `wrangler` logged `SUCCESS Modified
+ * application … image = sha256:<new>`, a stop+boot-check ran cleanly — and the
+ * boot log contained NONE of the new script's output. The container was still
+ * the old image.
+ *
+ * ⚠️ AND IT WOULD NEVER HAVE FIXED ITSELF. A container is replaced when it
+ * sleeps and is re-created. `sleepAfter` is 30m on this Worker (it MUST exceed
+ * the keepalive interval, or every probe churns the container and spams the
+ * customer's Slack — see hermesContainer.ts). Divinci's keepalive probes every
+ * 10 MINUTES, and every probe calls `renewActivityTimeout()`. A warm
+ * socket-mode container therefore never sleeps, is never replaced, and can
+ * never pick up a new image. The setting that keeps Slack stable is in direct
+ * tension with image delivery, and nothing surfaced that tension: the deploy
+ * is green either way.
+ *
+ * This route is the release valve. It is deliberately separate from `stop`
+ * rather than folded into it — destroying the instance loses in-container
+ * state (session DBs, the Slack platform config the sweep pushes) and forces a
+ * cold start, so it should be an explicit act, not a side effect of a restart.
+ */
+hosted.post('/hosted/agent/evict', async (c) => {
+  const agentId = c.var.agentId;
+  const container = getContainerForAgent(c.env, agentId);
+  try {
+    // Stop the gateway first so Hermes can flush state to disk before the
+    // instance goes away. Best-effort: a gateway that is already dead (or
+    // wedged) must not block the eviction, which is the whole point of
+    // reaching for this route.
+    try {
+      await killGateway(container);
+    } catch {
+      /* already gone, or unresponsive — proceed to destroy regardless */
+    }
+    await (container as any).destroy();
+    return c.json({ ok: true, agentId, status: 'evicted' });
+  } catch (err) {
+    return c.json({ ok: false, agentId, error: err instanceof Error ? err.message : String(err) }, 502);
+  }
+});
+
+/**
  * Full-surface per-agent proxy. Forwards ANY path under /hosted/agent/proxy/* to
  * the agent's container Hermes API (/v1/*, /api/sessions/*, /health, …) so an
  * external client — a local Hermes with GATEWAY_PROXY_URL, the desktop app, or

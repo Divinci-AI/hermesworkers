@@ -227,6 +227,43 @@ export const WORKSPACE_EGRESS_HOSTS = [
 ].join(',');
 
 /**
+ * Hosts needed by the platform CLIs baked into the image (`gcloud`, `wrangler`).
+ *
+ * Same whole-container widening caveat as WORKSPACE_EGRESS_HOSTS: the egress
+ * guard reads its allowlist once at boot, so these cannot honestly be scoped to
+ * a single invocation. Off unless HERMES_PLATFORM_CLI_ENABLED=true.
+ *
+ * - googleapis.com / accounts.google.com — gcloud control plane + OAuth
+ * - api.cloudflare.com — wrangler deploy / whoami / Workers API
+ *
+ * Tokens are still required for anything useful; an empty allowlist would only
+ * let the binaries print `--version`. Reaching an authenticated endpoint without
+ * a credential still fails at the API.
+ */
+export const PLATFORM_EGRESS_HOSTS = [
+  'googleapis.com',
+  'oauth2.googleapis.com',
+  'www.googleapis.com',
+  'accounts.google.com',
+  'api.cloudflare.com',
+].join(',');
+
+/**
+ * Compose the egress allowlist for a container boot from env feature flags.
+ * Pure string join — unit-tested without spinning a container.
+ */
+export function composeTerminalAllowlist(opts: {
+  base?: string;
+  workspaceCliEnabled?: boolean;
+  platformCliEnabled?: boolean;
+}): string {
+  let hosts = opts.base && opts.base.length > 0 ? opts.base : DEFAULT_EGRESS_ALLOWLIST;
+  if (opts.workspaceCliEnabled) hosts = `${hosts},${WORKSPACE_EGRESS_HOSTS}`;
+  if (opts.platformCliEnabled) hosts = `${hosts},${PLATFORM_EGRESS_HOSTS}`;
+  return hosts;
+}
+
+/**
  * Build a `gws` invocation with a short-lived OAuth access token.
  *
  * The token is the customer's own Workspace credential, so it is handled more

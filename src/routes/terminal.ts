@@ -21,7 +21,6 @@ import type { Env } from '../lib/container';
 import { getContainerForAgent } from '../lib/tenant';
 import { withRetry } from '../lib/resilience';
 import {
-  DEFAULT_EGRESS_ALLOWLIST,
   MAX_OUTPUT_CHARS,
   TerminalBoundaryError,
   WORKSPACE_ROOT,
@@ -32,9 +31,8 @@ import {
   truncateOutput,
   buildWorkspaceCommand,
   validateWorkspaceArgs,
-  WORKSPACE_EGRESS_HOSTS,
+  composeTerminalAllowlist,
 } from '../lib/terminal';
-
 type TerminalCtx = { Bindings: Env; Variables: { agentId: string } };
 
 const terminal = new Hono<TerminalCtx>();
@@ -51,13 +49,19 @@ interface ExecLike {
   }>;
 }
 
+/**
+ * Compose the egress allowlist for this container boot.
+ *
+ * Base forges/registries, plus optional whole-container widenings for Workspace
+ * (`gws`) and platform CLIs (`gcloud` / `wrangler`). Those widenings are opt-in
+ * because the guard cannot scope them to a single command.
+ */
 function allowlistFor(env: Env): string {
-  const base = (env as unknown as { EGRESS_ALLOWED_HOSTS?: string }).EGRESS_ALLOWED_HOSTS
-    || DEFAULT_EGRESS_ALLOWLIST;
-  // Google API hosts are added for the whole container, and only when the
-  // Workspace feature is enabled — see WORKSPACE_EGRESS_HOSTS for why this
-  // cannot honestly be scoped to a single command.
-  return env.HERMES_WORKSPACE_CLI_ENABLED === 'true' ? `${base},${WORKSPACE_EGRESS_HOSTS}` : base;
+  return composeTerminalAllowlist({
+    base: (env as unknown as { EGRESS_ALLOWED_HOSTS?: string }).EGRESS_ALLOWED_HOSTS,
+    workspaceCliEnabled: env.HERMES_WORKSPACE_CLI_ENABLED === 'true',
+    platformCliEnabled: env.HERMES_PLATFORM_CLI_ENABLED === 'true',
+  });
 }
 
 /**

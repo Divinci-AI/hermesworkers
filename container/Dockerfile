@@ -107,6 +107,55 @@ RUN set -eux; \
     rm -rf /tmp/gws.tar.gz /tmp/gws.sha256; \
     gws --version
 
+# Google Cloud CLI (`gcloud`) — pinned tarball + SHA-256, same supply-chain
+# posture as Node and gws. Available to the virtual terminal for GCP dogfood
+# (Cloud Run, Artifact Registry, logs). Credentials are NEVER baked in: the
+# agent authenticates at runtime (short-lived token / ADC inject); without a
+# token the binary is present but API calls fail closed.
+#
+# Image size cost is real (~90 MB compressed / ~400 MB unpacked). Acceptable for
+# standard-1 sandbox instances; bump deliberately and re-verify the digest.
+# Cloudflare Containers currently run linux/amd64 — refuse other arches rather
+# than silently install a mismatched binary.
+ENV GCLOUD_VERSION=579.0.0
+RUN set -eux; \
+    ARCH="$(dpkg --print-architecture)"; \
+    case "${ARCH}" in \
+      amd64) GCLOUD_ARCH="x86_64"; GCLOUD_SHA256="a9a7fbe51cda37cf6142b1bbcff12227550e60a6c67e8cf84644fb301371c4de" ;; \
+      *) echo "gcloud: unsupported architecture ${ARCH} (Cloudflare Containers are amd64)" >&2; exit 1 ;; \
+    esac; \
+    url="https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-${GCLOUD_VERSION}-linux-${GCLOUD_ARCH}.tar.gz"; \
+    curl -fsSL "${url}" -o /tmp/gcloud.tgz; \
+    echo "${GCLOUD_SHA256}  /tmp/gcloud.tgz" | sha256sum -c -; \
+    tar -xzf /tmp/gcloud.tgz -C /opt; \
+    rm /tmp/gcloud.tgz; \
+    CLOUDSDK_CORE_DISABLE_PROMPTS=1 /opt/google-cloud-sdk/install.sh \
+      --quiet \
+      --usage-reporting false \
+      --path-update false \
+      --command-completion false; \
+    ln -sf /opt/google-cloud-sdk/bin/gcloud /usr/local/bin/gcloud; \
+    ln -sf /opt/google-cloud-sdk/bin/gsutil /usr/local/bin/gsutil; \
+    ln -sf /opt/google-cloud-sdk/bin/bq /usr/local/bin/bq; \
+    # Drop install backups / pyc so the snapshot stays leaner.
+    rm -rf /opt/google-cloud-sdk/.install/.backup \
+           /opt/google-cloud-sdk/platform/gsutil/third_party \
+           /root/.config/gcloud; \
+    gcloud --version
+
+# Cloudflare Wrangler — pinned npm version. Postinstall pulls the matching
+# workerd binary for the host arch (expected at image build). No CF account
+# token is stored; `wrangler whoami` / deploy need a short-lived token at runtime
+# (or CLOUDFLARE_API_TOKEN injected for one command — never persisted under
+# /workspace). registry.npmjs.org is already on the default egress allowlist so
+# component fetches at build time succeed.
+ENV WRANGLER_VERSION=4.120.0
+RUN set -eux; \
+    npm install -g "wrangler@${WRANGLER_VERSION}"; \
+    wrangler --version; \
+    npm cache clean --force; \
+    rm -rf /root/.npm /tmp/*
+
 # Pin HOME so Cloudflare Sandbox snapshot/backup catches Hermes state under ~/.hermes.
 ENV HOME=/home/hermes
 RUN mkdir -p /home/hermes
@@ -179,6 +228,23 @@ RUN sed -i 's/\r$//' /usr/local/bin/hermes-term-exec \
     && printf 'hermes ALL=(hermes-term) NOPASSWD: /usr/local/bin/hermes-term-exec\n' > /etc/sudoers.d/hermes-term \
     && chmod 0440 /etc/sudoers.d/hermes-term \
     && visudo -cf /etc/sudoers.d/hermes-term
+
+# ── Unattended-turn tool guard (divinci_email_guard) ───────────────────────
+#
+# Staged read-only under /usr/local/share; start-hermes.sh installs it into
+# ~hermes/.hermes/plugins/ at boot and enables it in `plugins.enabled`.
+#
+# Owned root:root and 0755/0644 so the `hermes` uid — the one an injected
+# agent runs as — cannot rewrite the guard that constrains it. The copy under
+# ~/.hermes IS writable by hermes; that is unavoidable (the plugin loader
+# only reads from there) and is why Hermes' own shell is disabled via
+# command_allowlist=[] and the bounded terminal runs as hermes-term, which
+# cannot write ~hermes/.hermes/ at all. The staged original is the reference
+# copy, re-installed on every boot.
+COPY plugins/divinci_email_guard /usr/local/share/divinci-hermes-plugins/divinci_email_guard
+RUN chown -R root:root /usr/local/share/divinci-hermes-plugins \
+    && find /usr/local/share/divinci-hermes-plugins -type d -exec chmod 0755 {} + \
+    && find /usr/local/share/divinci-hermes-plugins -type f -exec chmod 0644 {} +
 
 COPY egress-guard.js /usr/local/bin/egress-guard.js
 COPY setup-terminal.sh /usr/local/bin/setup-terminal.sh

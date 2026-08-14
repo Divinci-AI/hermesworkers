@@ -10,9 +10,12 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   DEFAULT_EGRESS_ALLOWLIST,
+  PLATFORM_EGRESS_HOSTS,
   TerminalBoundaryError,
+  WORKSPACE_EGRESS_HOSTS,
   WORKSPACE_ROOT,
   buildTerminalCommand,
+  composeTerminalAllowlist,
   ensureTerminalBoundary,
   forgetTerminalBoundary,
   resolveWorkspacePath,
@@ -167,6 +170,49 @@ describe('egress allowlist default', () => {
     expect(DEFAULT_EGRESS_ALLOWLIST).toContain('github.com');
     expect(DEFAULT_EGRESS_ALLOWLIST).toContain('registry.npmjs.org');
     expect(DEFAULT_EGRESS_ALLOWLIST).not.toContain('*');
+  });
+});
+
+describe('composeTerminalAllowlist feature flags', () => {
+  const base = 'github.com,registry.npmjs.org';
+
+  it('defaults to base only (flags closed)', () => {
+    const hosts = composeTerminalAllowlist({ base });
+    expect(hosts).toBe(base);
+    expect(hosts).not.toContain('api.cloudflare.com');
+    expect(hosts).not.toContain('accounts.google.com');
+  });
+
+  it('falls back to DEFAULT when base is empty/undefined', () => {
+    expect(composeTerminalAllowlist({})).toBe(DEFAULT_EGRESS_ALLOWLIST);
+  });
+
+  it('adds Workspace hosts when workspace CLI is enabled', () => {
+    const hosts = composeTerminalAllowlist({ base, workspaceCliEnabled: true });
+    expect(hosts).toContain('googleapis.com');
+    expect(hosts).toContain(WORKSPACE_EGRESS_HOSTS.split(',')[0]);
+    expect(hosts).not.toContain('api.cloudflare.com');
+  });
+
+  it('adds platform CLI hosts when platform CLI is enabled', () => {
+    const hosts = composeTerminalAllowlist({ base, platformCliEnabled: true });
+    expect(hosts).toContain('api.cloudflare.com');
+    expect(hosts).toContain('accounts.google.com');
+    expect(hosts).toContain('googleapis.com');
+    // No wildcards — the guard rejects them.
+    expect(PLATFORM_EGRESS_HOSTS).not.toContain('*');
+    expect(hosts).not.toContain('*');
+  });
+
+  it('composes workspace + platform when both enabled', () => {
+    const hosts = composeTerminalAllowlist({
+      base,
+      workspaceCliEnabled: true,
+      platformCliEnabled: true,
+    });
+    expect(hosts).toContain('googleapis.com');
+    expect(hosts).toContain('api.cloudflare.com');
+    expect(hosts.startsWith(base)).toBe(true);
   });
 });
 
