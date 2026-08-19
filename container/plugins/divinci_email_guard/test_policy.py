@@ -148,10 +148,13 @@ class TestTheAllowlistMatchesObserver:
     # assertion, like the Fulcrum set: the point of this test is that widening
     # the allowlist has to be a deliberate edit HERE as well as there, so a
     # tool cannot be added on one side alone.
+    # Underscores: Hermes sanitises every non-[A-Za-z0-9_] character out of
+    # an MCP tool name before registering it, so Calendly's hyphenated API
+    # names arrive here with underscores. See the note in policy.py.
     CALENDLY_TOOLS = {
-        "event_types-list_event_types",
-        "event_types-list_event_type_available_times",
-        "scheduling_links-create_single_use_scheduling_link",
+        "event_types_list_event_types",
+        "event_types_list_event_type_available_times",
+        "scheduling_links_create_single_use_scheduling_link",
     }
 
     def test_allowlist_is_the_observer_set_plus_approved_calendly(self):
@@ -174,8 +177,37 @@ class TestTheAllowlistMatchesObserver:
         # sales pipeline — and on this path a read IS the exfiltration.
         for tool in UNATTENDED_ALLOWED_TOOLS:
             leaf = tool.removeprefix("mcp__calendly__")
-            assert not leaf.startswith("meetings-"), tool
-            assert not leaf.startswith("availability-"), tool
+            # Match BOTH spellings. Written hyphen-only this assertion
+            # silently stopped guarding anything the moment the entries were
+            # corrected to their sanitised form — a guard that fails open on
+            # a rename is worse than no guard, because it still reads green.
+            assert not leaf.startswith(("meetings-", "meetings_")), tool
+            assert not leaf.startswith(("availability-", "availability_")), tool
+
+    def test_no_allowlist_entry_would_be_rewritten_by_the_sanitizer(self):
+        """Every entry must already be in the form Hermes will present.
+
+        Hermes registers MCP tools as `mcp__<server>__<tool>` with each
+        component passed through `re.sub(r"[^A-Za-z0-9_]", "_", ...)`
+        (tools/mcp_tool.py). An entry copied verbatim from a vendor's docs —
+        Calendly's are hyphenated — therefore never matches anything.
+
+        This fails CLOSED, which is why it needs a test: the allowlist is
+        deny-by-default, so the tool is simply refused, the turn degrades to
+        "a human will follow up", and nothing anywhere reports a
+        misconfiguration. It reads as "the integration doesn't work".
+        """
+        import re
+
+        for tool in UNATTENDED_ALLOWED_TOOLS | REJECTED_FOR_UNATTENDED:
+            sanitized = "mcp__" + "__".join(
+                re.sub(r"[^A-Za-z0-9_]", "_", part)
+                for part in tool.removeprefix("mcp__").split("__")
+            ) if tool.startswith("mcp__") else re.sub(r"[^A-Za-z0-9_]", "_", tool)
+            assert tool == sanitized, (
+                f"{tool!r} would be registered by Hermes as {sanitized!r}, "
+                f"so this entry can never match."
+            )
 
     def test_no_execution_or_file_tool_slipped_into_the_allowlist(self):
         # A second, independent assertion on the same set. The equality test
@@ -242,20 +274,20 @@ class TestCalendlyOnTheUnattendedPath:
     """
 
     ALLOWED = [
-        "mcp__calendly__event_types-list_event_types",
-        "mcp__calendly__event_types-list_event_type_available_times",
-        "mcp__calendly__scheduling_links-create_single_use_scheduling_link",
+        "mcp__calendly__event_types_list_event_types",
+        "mcp__calendly__event_types_list_event_type_available_times",
+        "mcp__calendly__scheduling_links_create_single_use_scheduling_link",
     ]
     BLOCKED = [
-        "mcp__calendly__meetings-list_events",
-        "mcp__calendly__meetings-list_event_invitees",
-        "mcp__calendly__meetings-get_event",
-        "mcp__calendly__meetings-get_event_invitee",
-        "mcp__calendly__availability-list_user_busy_times",
-        "mcp__calendly__meetings-cancel_event",
-        "mcp__calendly__meetings-create_invitee",
-        "mcp__calendly__event_types-update_event_type",
-        "mcp__calendly__organizations-create_organization_invitation",
+        "mcp__calendly__meetings_list_events",
+        "mcp__calendly__meetings_list_event_invitees",
+        "mcp__calendly__meetings_get_event",
+        "mcp__calendly__meetings_get_event_invitee",
+        "mcp__calendly__availability_list_user_busy_times",
+        "mcp__calendly__meetings_cancel_event",
+        "mcp__calendly__meetings_create_invitee",
+        "mcp__calendly__event_types_update_event_type",
+        "mcp__calendly__organizations_create_organization_invitation",
     ]
 
     @pytest.mark.parametrize("tool", ALLOWED)
@@ -273,7 +305,7 @@ class TestCalendlyOnTheUnattendedPath:
 
     def test_a_new_calendly_tool_is_denied_by_default(self):
         # The allowlist must stay an allowlist as Calendly adds endpoints.
-        assert decide("mcp__calendly__meetings-invent_new_thing", "api_server") is not None
+        assert decide("mcp__calendly__meetings_invent_new_thing", "api_server") is not None
 
     def test_the_documented_rejections_are_not_also_allowed(self):
         assert not (REJECTED_FOR_UNATTENDED & UNATTENDED_ALLOWED_TOOLS)

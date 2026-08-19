@@ -106,14 +106,23 @@ UNATTENDED_ALLOWED_TOOLS = frozenset({
     # cannot reach content from another path". These three pass it because
     # what they return is ALREADY PUBLIC: the event types and open slots on
     # the public booking page, and a link to that same page.
-    "mcp__calendly__event_types-list_event_types",
-    "mcp__calendly__event_types-list_event_type_available_times",
+    # ⚠️ UNDERSCORES, NOT HYPHENS. Calendly's own names are hyphenated
+    # (`event_types-list_event_types`), and the prose below uses that form
+    # because it is what the API docs say. Hermes does NOT: it registers MCP
+    # tools as `mcp__<server>__<tool>` after running each component through
+    # `re.sub(r"[^A-Za-z0-9_]", "_", ...)` (mcp_tool.py), so every hyphen
+    # arrives here as an underscore. Writing the docs' form is not a typo that
+    # fails loudly — the allowlist is deny-by-default, so it fails CLOSED and
+    # silently, and reads as "Calendly doesn't work". Pinned by
+    # test_no_allowlist_entry_would_be_rewritten_by_the_sanitizer.
+    "mcp__calendly__event_types_list_event_types",
+    "mcp__calendly__event_types_list_event_type_available_times",
     # A write, deliberately, and the safest way to close a scheduling thread:
     # it returns a URL and lets the invitee choose. Nothing is written to the
     # calendar, no existing booking is touched, and a leaked link books time
     # with us rather than exposing anything. Prefer this over booking on
     # someone's behalf.
-    "mcp__calendly__scheduling_links-create_single_use_scheduling_link",
+    "mcp__calendly__scheduling_links_create_single_use_scheduling_link",
 })
 
 # ── Considered for this list and DELIBERATELY REJECTED ─────────────────────
@@ -181,13 +190,13 @@ UNATTENDED_ALLOWED_TOOLS = frozenset({
 REJECTED_FOR_UNATTENDED = frozenset({
     "search_files",
     "session_search",
-    "mcp__calendly__meetings-list_events",
-    "mcp__calendly__meetings-list_event_invitees",
-    "mcp__calendly__meetings-get_event",
-    "mcp__calendly__meetings-get_event_invitee",
-    "mcp__calendly__availability-list_user_busy_times",
-    "mcp__calendly__meetings-cancel_event",
-    "mcp__calendly__meetings-create_invitee",
+    "mcp__calendly__meetings_list_events",
+    "mcp__calendly__meetings_list_event_invitees",
+    "mcp__calendly__meetings_get_event",
+    "mcp__calendly__meetings_get_event_invitee",
+    "mcp__calendly__availability_list_user_busy_times",
+    "mcp__calendly__meetings_cancel_event",
+    "mcp__calendly__meetings_create_invitee",
 })
 
 # Message handed back as the tool result. The model reads this, so it says
