@@ -91,6 +91,29 @@ UNATTENDED_ALLOWED_TOOLS = frozenset({
     "mcp__fulcrum__memory_store",
     "mcp__fulcrum__memory_file_read",
     "mcp__fulcrum__send_notification",
+
+    # ── Calendly ───────────────────────────────────────────────────────────
+    #
+    # Added 2026-08-19 because an email-driven sales turn kept ending in
+    # "Michael needs to provide available times", which is the one question a
+    # scheduling tool answers and a human should not have to.
+    #
+    # ⚠️ CHOSEN AGAINST THIS FILE'S OWN TEST, NOT AGAINST "read-only".
+    # The rejection note below is explicit that read-only is the wrong
+    # property here — on this path a read IS the exfiltration, because the
+    # turn output leaves the container and the auto-reply lands it in an
+    # inbox. The test that matters is "cannot reach the credentials, and
+    # cannot reach content from another path". These three pass it because
+    # what they return is ALREADY PUBLIC: the event types and open slots on
+    # the public booking page, and a link to that same page.
+    "mcp__calendly__event_types-list_event_types",
+    "mcp__calendly__event_types-list_event_type_available_times",
+    # A write, deliberately, and the safest way to close a scheduling thread:
+    # it returns a URL and lets the invitee choose. Nothing is written to the
+    # calendar, no existing booking is touched, and a leaked link books time
+    # with us rather than exposing anything. Prefer this over booking on
+    # someone's behalf.
+    "mcp__calendly__scheduling_links-create_single_use_scheduling_link",
 })
 
 # ── Considered for this list and DELIBERATELY REJECTED ─────────────────────
@@ -129,9 +152,42 @@ UNATTENDED_ALLOWED_TOOLS = frozenset({
 # If email summaries need to improve, the way to do it is a tool whose scope
 # is bounded by construction — the way the bounded terminal's tools are
 # bounded by uid 10002 — not a built-in that happens to be read-shaped.
+#
+# ── Calendly tools considered and DELIBERATELY REJECTED (2026-08-19) ───────
+#
+# The obvious pick was `availability-list_user_busy_times` — it directly
+# answers "when is Michael free?". It is read-only, and read-only is exactly
+# the argument this section exists to reject.
+#
+#   meetings-list_events        — returns the upcoming meeting list: who,
+#   meetings-list_event_invitees  when, and their email addresses. That is the
+#   meetings-get_event            SALES PIPELINE, reachable by anyone who can
+#   meetings-get_event_invitee    email the agent, returned in a reply. It is
+#                                 the search_files failure exactly: content
+#                                 from another path, reached by a read.
+#
+#   availability-list_user_busy_times — not public. Busy intervals disclose
+#                                 working patterns and, depending on the
+#                                 account, event detail. And it is not needed:
+#                                 list_event_type_available_times gives the
+#                                 bookable complement from public data.
+#
+#   meetings-cancel_event       — mutations on EXISTING bookings. An agent
+#   meetings-create_invitee       reading attacker-adjacent mail must not be
+#   event_types-update_*          able to move, cancel or create meetings, or
+#                                 edit what is bookable. Slack has a human
+#                                 present and already has the full toolset;
+#                                 that is where these belong.
 REJECTED_FOR_UNATTENDED = frozenset({
     "search_files",
     "session_search",
+    "mcp__calendly__meetings-list_events",
+    "mcp__calendly__meetings-list_event_invitees",
+    "mcp__calendly__meetings-get_event",
+    "mcp__calendly__meetings-get_event_invitee",
+    "mcp__calendly__availability-list_user_busy_times",
+    "mcp__calendly__meetings-cancel_event",
+    "mcp__calendly__meetings-create_invitee",
 })
 
 # Message handed back as the tool result. The model reads this, so it says

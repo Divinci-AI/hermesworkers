@@ -144,9 +144,38 @@ class TestTheAllowlistMatchesObserver:
         "update_task",
     }
 
-    def test_allowlist_is_the_observer_set(self):
-        ours = {t.removeprefix("mcp__fulcrum__") for t in UNATTENDED_ALLOWED_TOOLS}
-        assert ours == self.OBSERVER_TOOLS
+    # Exactly the Calendly tools approved on 2026-08-19. Kept as an equality
+    # assertion, like the Fulcrum set: the point of this test is that widening
+    # the allowlist has to be a deliberate edit HERE as well as there, so a
+    # tool cannot be added on one side alone.
+    CALENDLY_TOOLS = {
+        "event_types-list_event_types",
+        "event_types-list_event_type_available_times",
+        "scheduling_links-create_single_use_scheduling_link",
+    }
+
+    def test_allowlist_is_the_observer_set_plus_approved_calendly(self):
+        fulcrum, calendly, other = set(), set(), set()
+        for t in UNATTENDED_ALLOWED_TOOLS:
+            if t.startswith("mcp__fulcrum__"):
+                fulcrum.add(t.removeprefix("mcp__fulcrum__"))
+            elif t.startswith("mcp__calendly__"):
+                calendly.add(t.removeprefix("mcp__calendly__"))
+            else:
+                other.add(t)
+        assert fulcrum == self.OBSERVER_TOOLS
+        assert calendly == self.CALENDLY_TOOLS
+        # No third server has crept in unnoticed.
+        assert other == set(), other
+
+    def test_no_calendly_tool_that_reads_meetings_or_writes_a_booking(self):
+        # The property, asserted independently of the exact names above:
+        # `meetings-*` returns who we are meeting and their addresses — the
+        # sales pipeline — and on this path a read IS the exfiltration.
+        for tool in UNATTENDED_ALLOWED_TOOLS:
+            leaf = tool.removeprefix("mcp__calendly__")
+            assert not leaf.startswith("meetings-"), tool
+            assert not leaf.startswith("availability-"), tool
 
     def test_no_execution_or_file_tool_slipped_into_the_allowlist(self):
         # A second, independent assertion on the same set. The equality test
@@ -200,3 +229,51 @@ class TestTheReadOnlyBuiltInsStayBlocked:
         # refused and a tool that is broken look identical.
         for tool in REJECTED_FOR_UNATTENDED:
             assert decide(tool, "slack") is None
+
+
+class TestCalendlyOnTheUnattendedPath:
+    """Added 2026-08-19.
+
+    An email-driven sales turn kept ending in "Michael needs to provide
+    available times" — the one question a scheduling tool answers. The three
+    tools allowed are the ones whose output is ALREADY PUBLIC on the booking
+    page; everything that would disclose the meeting list, or write to the
+    calendar, stays blocked.
+    """
+
+    ALLOWED = [
+        "mcp__calendly__event_types-list_event_types",
+        "mcp__calendly__event_types-list_event_type_available_times",
+        "mcp__calendly__scheduling_links-create_single_use_scheduling_link",
+    ]
+    BLOCKED = [
+        "mcp__calendly__meetings-list_events",
+        "mcp__calendly__meetings-list_event_invitees",
+        "mcp__calendly__meetings-get_event",
+        "mcp__calendly__meetings-get_event_invitee",
+        "mcp__calendly__availability-list_user_busy_times",
+        "mcp__calendly__meetings-cancel_event",
+        "mcp__calendly__meetings-create_invitee",
+        "mcp__calendly__event_types-update_event_type",
+        "mcp__calendly__organizations-create_organization_invitation",
+    ]
+
+    @pytest.mark.parametrize("tool", ALLOWED)
+    def test_public_scheduling_data_is_allowed(self, tool):
+        assert decide(tool, "api_server") is None
+
+    @pytest.mark.parametrize("tool", BLOCKED)
+    def test_pipeline_reads_and_calendar_writes_are_blocked(self, tool):
+        assert decide(tool, "api_server") is not None
+
+    @pytest.mark.parametrize("tool", BLOCKED)
+    def test_slack_still_gets_them(self, tool):
+        # Slack has a human present; that is where booking and cancelling live.
+        assert decide(tool, "slack") is None
+
+    def test_a_new_calendly_tool_is_denied_by_default(self):
+        # The allowlist must stay an allowlist as Calendly adds endpoints.
+        assert decide("mcp__calendly__meetings-invent_new_thing", "api_server") is not None
+
+    def test_the_documented_rejections_are_not_also_allowed(self):
+        assert not (REJECTED_FOR_UNATTENDED & UNATTENDED_ALLOWED_TOOLS)
