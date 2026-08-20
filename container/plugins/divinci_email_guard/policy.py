@@ -98,6 +98,21 @@ UNATTENDED_ALLOWED_TOOLS = frozenset({
     # "Michael needs to provide available times", which is the one question a
     # scheduling tool answers and a human should not have to.
     #
+    # ⚠️ THESE ARE USED BY SLACK ONLY. Nothing on the EMAIL path depends on
+    # them, and reading this block as "the control that makes email booking
+    # work" gets both halves wrong. Email booking is done server-side: the
+    # public-api webhook calls Calendly itself and injects the times into the
+    # prompt, so the container never holds a scheduling credential and never
+    # calls a scheduling tool. That split was deliberate — the container reads
+    # attacker-controlled mail, and Calendly ROTATES refresh tokens, which the
+    # container's ephemeral $HERMES_HOME/mcp-tokens/ cannot survive (it would
+    # have passed testing and died in a week).
+    #
+    # So: these entries are correct and should stay, because the Hermes Local /
+    # Slack surface does call the tools directly. They are simply not what
+    # makes the email replies carry times. Removing them breaks Slack; keeping
+    # them proves nothing about email.
+    #
     # ⚠️ CHOSEN AGAINST THIS FILE'S OWN TEST, NOT AGAINST "read-only".
     # The rejection note below is explicit that read-only is the wrong
     # property here — on this path a read IS the exfiltration, because the
