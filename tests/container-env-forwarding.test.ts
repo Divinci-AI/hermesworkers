@@ -83,3 +83,39 @@ describe("HERMES_* flags reach the container", () => {
     expect(startHermes).toContain("disabled_toolsets=UNSET");
   });
 });
+
+/**
+ * ── Non-HERMES_ vars the boot script reads ────────────────────────────────
+ *
+ * The scan above only walks `HERMES_*` names, so a var with any other prefix
+ * can be read by start-hermes.sh and silently never forwarded. That happened
+ * the day the boot script started establishing the terminal boundary:
+ * EGRESS_ALLOWED_HOSTS is a Worker [vars] entry, is NOT in the container
+ * process, and the script logged
+ *
+ *   WARNING: EGRESS_ALLOWED_HOSTS is empty — all terminal egress will be denied
+ *
+ * which is fail-closed (safe) but wrong — it denies github.com too, so
+ * git_clone and every package install break while the deployed allowlist sits
+ * inert. Nothing failed; the boundary came up looking correct.
+ */
+describe("egress vars reach the container", () => {
+  it("forwards EGRESS_ALLOWED_HOSTS", () => {
+    expect(containerLib).toMatch(/keys\.EGRESS_ALLOWED_HOSTS\s*=/);
+  });
+
+  it("forwards it through composeTerminalAllowlist, not the raw var", () => {
+    // Both routes must compose the list identically. Passing the raw var here
+    // would drop the Workspace/platform-CLI widenings on the boot path only —
+    // re-creating, in miniature, the divergence this whole fix addresses.
+    expect(containerLib).toMatch(/EGRESS_ALLOWED_HOSTS\s*=\s*composeTerminalAllowlist\(/);
+  });
+
+  it("start-hermes.sh actually reads it", () => {
+    expect(startHermes).toMatch(/EGRESS_ALLOWED_HOSTS=/);
+  });
+
+  it("forwards the proactive kill switch too", () => {
+    expect(containerLib).toMatch(/keys\.HERMES_PROACTIVE_TOOLS_DISABLED\s*=/);
+  });
+});

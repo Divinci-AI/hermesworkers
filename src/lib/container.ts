@@ -1,5 +1,6 @@
 import type { HermesInstance } from '../hermesContainer';
 import type { RateLimit } from './auth';
+import { composeTerminalAllowlist } from './terminal';
 
 /**
  * Bindings exposed to the Worker via wrangler.toml.
@@ -222,6 +223,33 @@ export function collectProviderKeys(env: Env): Record<string, string> {
   if (env.HERMES_SLACK_TOOLSETS) {
     keys.HERMES_SLACK_TOOLSETS = env.HERMES_SLACK_TOOLSETS;
   }
+  if (env.HERMES_PROACTIVE_TOOLS_DISABLED) {
+    keys.HERMES_PROACTIVE_TOOLS_DISABLED = env.HERMES_PROACTIVE_TOOLS_DISABLED;
+  }
+  // The egress allowlist must reach the CONTAINER, not just the Worker.
+  //
+  // start-hermes.sh now runs setup-terminal.sh at boot, and that script reads
+  // EGRESS_ALLOWED_HOSTS from its own environment. A Worker [vars] entry is
+  // NOT in the container process (the comment above says exactly this), so
+  // without this the boot-time invocation sees an EMPTY allowlist and the
+  // script logs:
+  //
+  //   WARNING: EGRESS_ALLOWED_HOSTS is empty — all terminal egress will be denied
+  //
+  // That is fail-closed and therefore safe, but it is not correct: it denies
+  // github.com too, so `git_clone` and every package install break, and the
+  // deployed allowlist becomes inert. Observed on staging 2026-08-21, in the
+  // very boot log that proved the boundary works.
+  //
+  // ⚠️ composeTerminalAllowlist, NOT the raw var — it applies the same
+  // Workspace/platform-CLI widenings the Worker route applies, so the two
+  // paths cannot drift apart again. Divergence between them is the entire
+  // defect this boundary work exists to fix.
+  keys.EGRESS_ALLOWED_HOSTS = composeTerminalAllowlist({
+    base: env.EGRESS_ALLOWED_HOSTS,
+    workspaceCliEnabled: env.HERMES_WORKSPACE_CLI_ENABLED === "true",
+    platformCliEnabled: env.HERMES_PLATFORM_CLI_ENABLED === "true",
+  });
   if (env.HERMES_FULCRUM_MCP_ENABLED === "true" || env.HERMES_FULCRUM_MCP_ENABLED === "1") {
     keys.HERMES_FULCRUM_MCP_ENABLED = "true";
     if (env.FULCRUM_MCP_URL) keys.FULCRUM_MCP_URL = env.FULCRUM_MCP_URL;
