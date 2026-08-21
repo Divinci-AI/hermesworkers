@@ -15,6 +15,7 @@
  */
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
+import { isReservedSessionKey } from "../src/routes/hosted";
 import { join } from "node:path";
 
 const repoRoot = join(__dirname, "..");
@@ -200,5 +201,74 @@ describe("the proactive tier's prerequisite", () => {
     expect(dockerfile).toContain(
       "COPY plugins/divinci_email_guard /usr/local/share/divinci-hermes-plugins/divinci_email_guard",
     );
+  });
+});
+
+/**
+ * ── The namespace refusal, tested as BEHAVIOUR ────────────────────────────
+ *
+ * The checks above match source text, which proves the call is present and
+ * correctly ordered but says nothing about what it decides. This exercises
+ * the exported predicate directly — it is the boundary that stops a customer
+ * with a `/api/v1/hermes-proxy` key from minting the proactive signal, and
+ * "the string appears in the file" is not evidence that it holds.
+ */
+describe("isReservedSessionKey", () => {
+  it("refuses the live signal", () => {
+    expect(isReservedSessionKey("divinci-internal-proactive")).toBe(true);
+  });
+
+  it("refuses the whole namespace, including values not yet invented", () => {
+    expect(isReservedSessionKey("divinci-internal-")).toBe(true);
+    expect(isReservedSessionKey("divinci-internal-replay")).toBe(true);
+  });
+
+  it.each([
+    ["uppercase", "DIVINCI-INTERNAL-PROACTIVE"],
+    ["mixed case", "Divinci-Internal-Proactive"],
+    ["leading whitespace", "   divinci-internal-proactive"],
+    ["trailing whitespace", "divinci-internal-proactive   "],
+    ["a longer value in the namespace", "divinci-internal-proactive-but-mine"],
+  ])("refuses a %s bypass attempt", (_label, value) => {
+    expect(isReservedSessionKey(value)).toBe(true);
+  });
+
+  it.each([
+    ["a customer's own scope", "acme-prod"],
+    ["a lookalike that is NOT in the namespace", "divinci-internalproactive"],
+    ["a value merely CONTAINING the prefix", "x-divinci-internal-proactive"],
+    ["empty", ""],
+    ["absent", undefined],
+    ["null", null],
+  ])("permits %s", (_label, value) => {
+    expect(isReservedSessionKey(value as string | undefined | null)).toBe(false);
+  });
+});
+
+/**
+ * ── The kill switch ───────────────────────────────────────────────────────
+ *
+ * The capability is granted in this Worker, so it must be revocable in this
+ * Worker: a Worker deploy is ~1 minute, a public-api deploy ~14. Reverting
+ * the grant by redeploying Cloud Run would mean the slowest lever guarding
+ * the newest capability.
+ */
+describe("HERMES_PROACTIVE_TOOLS_DISABLED", () => {
+  const hosted = read("src/routes/hosted.ts");
+
+  it("gates the mint, and is checked BEFORE it", () => {
+    const gate = hosted.indexOf("const toolsDisabled");
+    const mint = hosted.indexOf("upstreamHeaders['X-Hermes-Session-Key']");
+    expect(gate).toBeGreaterThan(-1);
+    expect(mint).toBeGreaterThan(gate);
+    expect(hosted).toContain("!toolsDisabled &&");
+  });
+
+  it("defaults to ENABLED when unset", () => {
+    // An unset switch must not silently withhold the tier — that failure
+    // looks exactly like the tier never working, which is the hardest
+    // version of this to debug.
+    expect(hosted).toMatch(/HERMES_PROACTIVE_TOOLS_DISABLED \?\? ''/);
+    expect(hosted).toMatch(/\['1', 'true', 'yes'\]\.includes\(/);
   });
 });

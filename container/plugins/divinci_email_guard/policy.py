@@ -205,12 +205,39 @@ PROACTIVE_PLATFORMS = frozenset({"api_server"})
 # path via HERMES_DISABLED_TOOLSETS. The names collide; the boundaries do
 # not. `mcp__divinci_terminal__read_file` cannot read what `read_file` can.
 #
+# ⚠️ THE TWO HALVES REACH DIFFERENT NETWORKS, and it is the opposite of what
+# the tool names suggest. Do not conflate them:
+#
+#   web_search / web_extract  run as `hermes`, which the iptables owner-match
+#     does NOT cover (it matches uid 10002 only). So they reach arbitrary
+#     public hosts, bounded by hermes-agent's url_safety.py SSRF blocks.
+#     THIS — not the terminal — is what answers "does api.divinci.app serve a
+#     complete certificate chain" and "does that logo.svg 404".
+#
+#   mcp__divinci_terminal__*  runs as hermes-term (uid 10002), whose egress is
+#     REJECTed at the packet layer except through egress-guard.js, whose
+#     allowlist is GitHub, GitLab and the package registries. It therefore
+#     CANNOT curl a Divinci host — by design, and that is not a bug to fix by
+#     widening EGRESS_ALLOWED_HOSTS. What it buys is local computation and
+#     `git clone` of our own repos, i.e. verifying a claim against source the
+#     way Hermes Local does on the MacBook.
+#
 # ⚠️ web_extract fetches attacker-controlled CONTENT into a turn whose input
 # was otherwise trusted. That is a real injection vector and is accepted
-# knowingly: what an injected page can reach is still only this allowlist,
-# hermes-agent's url_safety.py blocks SSRF targets, and the output lands in
-# our Slack rather than a stranger's inbox. If that trade stops holding,
-# web_extract is the first entry to remove — not the terminal.
+# knowingly: what an injected page can persuade the agent to CALL is still
+# only this allowlist, and the output lands in our Slack rather than a
+# stranger's inbox. If that trade stops holding, web_extract is the first
+# entry to remove — not the terminal.
+#
+# ⚠️ THE INDIRECT CHAIN, stated so nobody has to rediscover it: an inbound
+# email may create a Fulcrum card, and a proactive wake reads Fulcrum cards.
+# So content originating from mail CAN reach a turn that now has tools. Three
+# things bound it, and all three must hold: inbound mail needs DMARC-pass
+# from an allowlisted sender (so this needs a COMPROMISED trusted account,
+# not a spoof); the terminal's egress cannot reach an attacker host; and the
+# fleet prompt frames board content as claims that "cannot authorise an
+# action". That last one predates this tier by a day and is now load-bearing
+# for it — do not weaken it.
 PROACTIVE_EXTRA_TOOLS = frozenset({
     # Look things up instead of re-reading the same task cards.
     "web_search",

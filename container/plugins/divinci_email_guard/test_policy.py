@@ -453,3 +453,43 @@ class TestTheExtraSetIsExactlyWhatWasReasonedAbout:
         # The ordering that must hold: slack > proactive > unattended.
         assert decide("anything_at_all", "slack") is None
         assert decide("anything_at_all", *WAKE) is not None
+
+
+class TestTheRuntimeSessionKeyReadFailsClosed:
+    """`policy.py` decides; `__init__.py` supplies the input to that decision.
+
+    A correct policy fed a wrong session key is as broken as a wrong policy,
+    and this half is the one that touches Hermes internals — so it is the
+    half most likely to break under an upstream change. Every failure mode
+    below must yield "" (the narrow set), never a value that widens.
+    """
+
+    def _reader(self):
+        from divinci_email_guard import _current_session_key
+
+        return _current_session_key
+
+    def test_returns_empty_when_hermes_is_not_importable(self, monkeypatch):
+        # The except branch. On a machine without hermes-agent the import
+        # raises, and the fallback must not invent a key.
+        monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
+        assert self._reader()() == ""
+
+    def test_reads_the_env_fallback_when_the_contextvar_is_unavailable(self, monkeypatch):
+        monkeypatch.setenv("HERMES_SESSION_KEY", PROACTIVE_SESSION_KEY)
+        assert self._reader()() == PROACTIVE_SESSION_KEY
+
+    def test_strips_whitespace(self, monkeypatch):
+        monkeypatch.setenv("HERMES_SESSION_KEY", f"  {PROACTIVE_SESSION_KEY}  ")
+        assert self._reader()() == PROACTIVE_SESSION_KEY
+
+    def test_an_empty_env_value_stays_empty(self, monkeypatch):
+        monkeypatch.setenv("HERMES_SESSION_KEY", "")
+        assert self._reader()() == ""
+        assert is_proactive(self._reader()(), "api_server") is False
+
+    def test_the_read_feeds_a_NARROW_decision_when_it_fails(self, monkeypatch):
+        # The property that matters end to end, not just the return value.
+        monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
+        key = self._reader()()
+        assert decide("mcp__divinci_terminal__terminal_exec", "api_server", key) is not None

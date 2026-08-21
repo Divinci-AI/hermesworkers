@@ -377,7 +377,13 @@ hosted.post('/hosted/agent/v1/chat/completions', async (c) => {
     'Content-Type': 'application/json',
     Authorization: `Bearer ${gatewayToken}`,
   };
-  if ((c.req.header('x-divinci-trigger') ?? '').trim().toLowerCase() === 'proactive') {
+  const toolsDisabled = ['1', 'true', 'yes'].includes(
+    (c.env.HERMES_PROACTIVE_TOOLS_DISABLED ?? '').trim().toLowerCase(),
+  );
+  if (
+    !toolsDisabled &&
+    (c.req.header('x-divinci-trigger') ?? '').trim().toLowerCase() === 'proactive'
+  ) {
     upstreamHeaders['X-Hermes-Session-Key'] = PROACTIVE_SESSION_KEY;
   }
 

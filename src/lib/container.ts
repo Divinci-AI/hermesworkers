@@ -56,6 +56,20 @@ export interface Env {
   HERMES_DEFAULT_MODEL?: string;
   DASHBOARD_HOSTNAME?: string;
 
+  /**
+   * Kill switch for the proactive tool tier. Set to "1"/"true" to stop
+   * minting the reserved session key, dropping proactive wakes back to the
+   * 15-tool unattended set WITHOUT a container rebuild or a public-api
+   * deploy (Cloud Run is ~14 minutes; a Worker deploy is ~1).
+   *
+   * Deliberately a Worker-side switch rather than a public-api one: the
+   * capability is granted here, so it must be revocable here. Same reasoning
+   * as HERMES_PROACTIVE_DISABLED and HERMES_DIGEST_DISABLED on the Divinci
+   * side — a capability with no fast off-switch is one you cannot safely
+   * turn on.
+   */
+  HERMES_PROACTIVE_TOOLS_DISABLED?: string;
+
   // Hosted (multi-tenant) mode: shared secret proving the caller is Divinci's
   // public-api backend. When set, hosted routes require it AND a trusted agent
   // id; the DO/container is resolved per-agent. Absent ⇒ single-tenant mode.
