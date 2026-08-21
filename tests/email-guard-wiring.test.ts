@@ -172,3 +172,33 @@ describe("the proactive tier's trust signal", () => {
     expect(policy).toContain('PROACTIVE_SESSION_KEY = "divinci-internal-proactive"');
   });
 });
+
+/**
+ * ── The dependency that would 403 every wake ──────────────────────────────
+ *
+ * `X-Hermes-Session-Key` is not merely ignored when the API server has no
+ * key configured — `_parse_session_key_header` returns **HTTP 403** and the
+ * whole turn fails:
+ *
+ *     "X-Hermes-Session-Key requires API key authentication.
+ *      Configure API_SERVER_KEY to enable this feature."
+ *
+ * So the proactive tier does not degrade to the narrow toolset if
+ * API_SERVER_KEY goes missing — every proactive wake starts failing
+ * outright, while Slack and email keep working, because they send no
+ * session key. That asymmetry is exactly what makes it hard to diagnose.
+ */
+describe("the proactive tier's prerequisite", () => {
+  it("sets API_SERVER_KEY, without which the session key 403s the turn", () => {
+    expect(startHermes).toMatch(/hermes config set API_SERVER_KEY\s+"\$\{HERMES_GATEWAY_TOKEN\}"/);
+  });
+
+  it("ships the plugin into the image, so a Worker deploy carries it", () => {
+    // The plugin is COPYd at build time and re-installed from that
+    // root-owned copy on every boot. Editing it without a rebuild changes
+    // nothing the container runs.
+    expect(dockerfile).toContain(
+      "COPY plugins/divinci_email_guard /usr/local/share/divinci-hermes-plugins/divinci_email_guard",
+    );
+  });
+});
