@@ -55,7 +55,7 @@ enabled = true
 # or path. Allowing a host allows POST to it as well as GET. Accepted here
 # because these are our own hosts and the terminal holds no credential to
 # authenticate with (uid 10002 cannot read ~/.hermes; verified in prod).
-EGRESS_ALLOWED_HOSTS = "github.com,codeload.github.com,objects.githubusercontent.com,raw.githubusercontent.com,gitlab.com,registry.npmjs.org,pypi.org,files.pythonhosted.org,crates.io,static.crates.io,proxy.golang.org,api.divinci.app,chat.divinci.app,embed.divinci.app,divinci-ai.workers.dev,pub-f4df7b63e90642deba26c7b9fd78ebb0.r2.dev"
+EGRESS_ALLOWED_HOSTS = "github.com,codeload.github.com,objects.githubusercontent.com,raw.githubusercontent.com,gitlab.com,registry.npmjs.org,pypi.org,files.pythonhosted.org,crates.io,static.crates.io,proxy.golang.org,api.divinci.app,chat.divinci.app,embed.divinci.app,divinci-ai.workers.dev,pub-f4df7b63e90642deba26c7b9fd78ebb0.r2.dev,mcp.buffer.com,sdk.divinci.ai"
 # Divinci dogfood (divinciai.slack.com Hermes): open Workspace + platform CLI
 # API hosts. Binaries are always in the image; credentials still required.
 # Turn off for a customer-facing prod deploy that must not widen egress.
@@ -130,24 +130,19 @@ HERMES_TERMINAL_ENABLED = "true"
 # Cost, stated plainly: interactive Slack turns now need an Allow click.
 # Staging keeps "off" for frictionless dogfooding, where no inbound email
 # endpoint is wired.
-# ⛔ REVOKED 2026-08-21, hours after the tier shipped. The proactive tier
-# grants the bounded terminal to UNATTENDED wakes on the premise that its
-# egress is allowlisted. Verified in production: it is NOT.
-# `curl --noproxy "*" https://example.com` from a wake returns 200, because
-# setup-terminal.sh never ran in this container — no egress-guard process on
-# :3128, no /var/log/hermes-egress-guard.out, and no iptables HERMES_TERM
-# chain. The allowlist is therefore advisory HTTP_PROXY env vars that any
-# client can ignore with one flag.
+# The proactive tier's grant was REVOKED for ~3h on 2026-08-21 and is now
+# restored. It was revoked because the tier gives unattended wakes the bounded
+# terminal on the premise that its egress is allowlisted, and that premise was
+# false: setup-terminal.sh had never run on the path the agent uses, so
+# `curl --noproxy "*"` reached the internet from a wake.
 #
-# Credentials are still out of reach (uid 10002, HOME=/workspace, ~/.hermes
-# unreadable), so this is an EXFILTRATION path rather than a credential one —
-# and a wake can read Fulcrum prospect data over MCP. Unattended is exactly
-# the case with nobody watching, so the grant is revoked until the boundary
-# is repaired. Slack keeps the terminal: a human is present there, and that
-# exposure predates today.
+# Restored only after the premise was made true and VERIFIED here, not on
+# staging. net-diag against this container now shows OUTPUT carrying
+# `HERMES_TERM ... owner UID match 10002`, the REJECT rule with matched
+# packets, and the direct-egress self-test failing (exit 7) where it returned
+# HTTP 200 that morning.
 #
-# Clear this line to restore the tier once setup-terminal.sh is proven to run.
-HERMES_PROACTIVE_TOOLS_DISABLED = "1"
+# To revoke again, add back: HERMES_PROACTIVE_TOOLS_DISABLED = "1"
 HERMES_APPROVALS_MODE = "manual"
 # Drop the BUILT-IN toolsets that execute as `hermes`, the uid owning every
 # provider credential in ~/.hermes/.
@@ -196,6 +191,9 @@ HERMES_DISABLED_TOOLSETS = "terminal,debugging,file,code_execution,computer_use,
 HERMES_SLACK_TOOLSETS = "web,vision,image_gen,bfl,skills,memory,todo,clarify,session_search,kanban,tts"
 HERMES_FULCRUM_MCP_ENABLED = "true"
 FULCRUM_MCP_URL = "https://fulcrum-acme.divinci.ai/mcp/observer"
+# Buffer MCP — changelog idea queue. Token is a wrangler secret:
+#   printf '%s' "$MCP_BUFFER_API_KEY" | wrangler secret put MCP_BUFFER_API_KEY -c wrangler.production.toml
+HERMES_BUFFER_MCP_ENABLED = "true"
 # ⚠️ INVARIANT: this MUST stay longer than the Divinci keepalive probe interval
 # (`*/10 * * * *` in server/workspace/workers/connector-sync-worker). A
 # SOCKET-mode Slack agent keeps its Slack connection inside the container, so a
