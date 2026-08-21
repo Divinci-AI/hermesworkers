@@ -311,3 +311,65 @@ describe('buildTerminalCommand — session survival', () => {
     expect(cmd).toMatch(/\bgosu\s+hermes-term\b/);
   });
 });
+
+/**
+ * ── The deployed Divinci allowlist ────────────────────────────────────────
+ *
+ * `EGRESS_ALLOWED_HOSTS` in the wrangler configs REPLACES
+ * DEFAULT_EGRESS_ALLOWLIST rather than extending it (composeTerminalAllowlist
+ * uses it as `base`), so the deployed value has to carry the forges and
+ * registries itself. An edit that adds a Divinci host by *overwriting* the
+ * line would silently break every `git clone` and `npm install` in the
+ * terminal, and nothing else would notice until a build failed.
+ *
+ * The two shape assertions below are the ones a well-meaning edit gets wrong.
+ */
+describe('deployed egress allowlists', () => {
+  const { readFileSync } = require('node:fs') as typeof import('node:fs');
+  const { join } = require('node:path') as typeof import('node:path');
+  const hostsIn = (file: string): string[] => {
+    const src = readFileSync(join(__dirname, '..', file), 'utf8');
+    const line = src.split('\n').find((l) => l.startsWith('EGRESS_ALLOWED_HOSTS ='));
+    if (!line) throw new Error(`${file}: no EGRESS_ALLOWED_HOSTS`);
+    return line.split('=')[1].trim().replace(/^"|"$/g, '').split(',').map((h) => h.trim());
+  };
+
+  for (const file of ['wrangler.production.toml', 'wrangler.staging.toml']) {
+    describe(file, () => {
+      const hosts = hostsIn(file);
+
+      it('still carries the build forges and registries', () => {
+        for (const h of DEFAULT_EGRESS_ALLOWLIST.split(',')) expect(hosts).toContain(h);
+      });
+
+      it('lets a wake reach the API the fleet keeps asking about', () => {
+        expect(hosts).toContain('api.divinci.app');
+      });
+
+      it('covers every demo worker via the account subdomain', () => {
+        // Suffix match — only our own account can deploy to it.
+        expect(hosts).toContain('divinci-ai.workers.dev');
+      });
+
+      it('names the R2 bucket EXACTLY, never the shared r2.dev suffix', () => {
+        // Dot-anchored `r2.dev` would admit every public R2 bucket on
+        // Cloudflare, an attacker's included. This is the single most
+        // tempting one-word "simplification" in the list.
+        expect(hosts).not.toContain('r2.dev');
+        expect(hosts.some((h) => h.endsWith('.r2.dev') && h.startsWith('pub-'))).toBe(true);
+      });
+
+      it('names divinci.app SUBDOMAINS, never the bare domain', () => {
+        // `divinci.app` is dot-anchored too, so it would admit every future
+        // subdomain — including connector-sync.divinci.app, a secret-gated
+        // internal cron endpoint that no agent should be able to reach.
+        expect(hosts).not.toContain('divinci.app');
+        expect(hosts).not.toContain('divinci.ai');
+      });
+
+      it('contains no wildcard (the guard strips them, but say so here too)', () => {
+        expect(hosts.some((h) => h.includes('*'))).toBe(false);
+      });
+    });
+  }
+});

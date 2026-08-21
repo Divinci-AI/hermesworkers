@@ -26,7 +26,36 @@ enabled = true
 # guard fails closed by design. Unset falls back to DEFAULT_EGRESS_ALLOWLIST
 # in src/lib/terminal.ts (package registries + forges).
 [vars]
-EGRESS_ALLOWED_HOSTS = "github.com,codeload.github.com,objects.githubusercontent.com,raw.githubusercontent.com,gitlab.com,registry.npmjs.org,pypi.org,files.pythonhosted.org,crates.io,static.crates.io,proxy.golang.org"
+# ─── Divinci's OWN surfaces, added 2026-08-21 ──────────────────────────────
+#
+# WHY: a proactive wake could not make an HTTP request to any Divinci host,
+# so wake after wake ended "a human can settle this in one command: curl -I
+# <url>". Neither half of the tier fixed it — the terminal's egress excluded
+# these hosts, and web_search/web_extract are not registered in this
+# container at all (web_tools.py gates them on a search provider key that is
+# not set). Verified by asking the running agent for its own tool list.
+#
+# The very first check settled a question the fleet had been circling for
+# days: pub-f4df…r2.dev/drvondawright/logo.svg really is a 404.
+#
+# ⚠️ EXPLICIT HOSTS, NOT `divinci.app`. A dot-anchored `divinci.app` would
+# also admit every future subdomain including internal ones
+# (connector-sync.divinci.app is a secret-gated cron endpoint). These five
+# are the surfaces a Divinci demo actually loads, which is what the fleet
+# needs to verify and the whole of what it needs.
+#
+# ⚠️ `divinci-ai.workers.dev` is a SUFFIX and that is deliberate — it covers
+# every demo-*-landing worker. It is safe because a workers.dev account
+# subdomain can only be deployed to by its owning account.
+#
+# ⚠️ The R2 bucket is an EXACT host, deliberately. A dot-anchored `r2.dev`
+# would admit every public R2 bucket on Cloudflare, including an attacker's.
+#
+# ⚠️ For HTTPS the guard is a CONNECT proxy: it sees host:port, never method
+# or path. Allowing a host allows POST to it as well as GET. Accepted here
+# because these are our own hosts and the terminal holds no credential to
+# authenticate with (uid 10002 cannot read ~/.hermes; verified in prod).
+EGRESS_ALLOWED_HOSTS = "github.com,codeload.github.com,objects.githubusercontent.com,raw.githubusercontent.com,gitlab.com,registry.npmjs.org,pypi.org,files.pythonhosted.org,crates.io,static.crates.io,proxy.golang.org,api.divinci.app,chat.divinci.app,embed.divinci.app,divinci-ai.workers.dev,pub-f4df7b63e90642deba26c7b9fd78ebb0.r2.dev"
 # Divinci dogfood (divinciai.slack.com Hermes): open Workspace + platform CLI
 # API hosts. Binaries are always in the image; credentials still required.
 # Turn off for a customer-facing prod deploy that must not widen egress.
