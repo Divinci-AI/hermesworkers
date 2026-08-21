@@ -337,6 +337,14 @@ class TestTheProactiveTierWidensOnlyForItsOwnKey:
     def test_email_may_NOT_run_the_bounded_terminal(self):
         assert decide("mcp__divinci_terminal__terminal_exec", *EMAIL) is not None
 
+    def test_a_wake_may_plan_with_todo(self):
+        # In-memory, per-session, no cross-session reach — unlike
+        # session_search, which is why one is allowed and the other is not.
+        assert decide("todo", *WAKE) is None
+
+    def test_email_may_NOT_use_todo(self):
+        assert decide("todo", *EMAIL) is not None
+
     def test_a_wake_may_search_the_web(self):
         assert decide("web_search", *WAKE) is None
         assert decide("web_extract", *WAKE) is None
@@ -423,6 +431,7 @@ class TestTheExtraSetIsExactlyWhatWasReasonedAbout:
         assert PROACTIVE_EXTRA_TOOLS == {
             "web_search",
             "web_extract",
+            "todo",
             "mcp__divinci_terminal__terminal_exec",
             "mcp__divinci_terminal__read_file",
             "mcp__divinci_terminal__list_files",

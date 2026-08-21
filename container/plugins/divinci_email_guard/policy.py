@@ -242,6 +242,16 @@ PROACTIVE_EXTRA_TOOLS = frozenset({
     # Look things up instead of re-reading the same task cards.
     "web_search",
     "web_extract",
+    # Plan across several steps WITHIN one wake. Named as blocked by two
+    # agents ("terminal_exec, session_search, and todo all return BLOCKED"),
+    # and it is the primitive for working a problem rather than emitting one
+    # observation — which is the whole point of widening this path.
+    #
+    # Zero security surface, checked at source rather than assumed: TodoStore
+    # is "in-memory, one instance per AIAgent (one per session)" — no file,
+    # no network, no subprocess, and no reach into another session. That last
+    # property is exactly what `session_search` lacks and why IT stays denied.
+    "todo",
     # The bounded terminal — the capability engineered for exactly this.
     "mcp__divinci_terminal__terminal_exec",
     "mcp__divinci_terminal__read_file",
