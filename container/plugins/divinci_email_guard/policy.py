@@ -209,18 +209,35 @@ PROACTIVE_PLATFORMS = frozenset({"api_server"})
 # the tool names suggest. Do not conflate them:
 #
 #   web_search / web_extract  run as `hermes`, which the iptables owner-match
-#     does NOT cover (it matches uid 10002 only). So they reach arbitrary
-#     public hosts, bounded by hermes-agent's url_safety.py SSRF blocks.
-#     THIS — not the terminal — is what answers "does api.divinci.app serve a
-#     complete certificate chain" and "does that logo.svg 404".
+#     does NOT cover (it matches uid 10002 only), so they WOULD reach arbitrary
+#     public hosts, bounded only by url_safety.py's SSRF blocks.
+#
+#     ⛔ BUT THEY ARE NOT REGISTERED IN THIS CONTAINER, so these two entries
+#     are currently INERT. `web_tools.py` gates the toolset on a search
+#     provider key (TAVILY_API_KEY / EXA_API_KEY / BRAVE_SEARCH_API_KEY) and
+#     none is set, so the tools never appear in the agent's tool list at all.
+#     Verified in production 2026-08-21 by asking the agent for its own tool
+#     list: 17 MCP tools plus exactly six built-ins (memory, session_search,
+#     skill_manage, skill_view, skills_list, todo). No web_*.
+#
+#     They stay in this allowlist deliberately — correct the day a key is
+#     provisioned — but DO NOT reason as though a wake can fetch a URL today.
 #
 #   mcp__divinci_terminal__*  runs as hermes-term (uid 10002), whose egress is
 #     REJECTed at the packet layer except through egress-guard.js, whose
-#     allowlist is GitHub, GitLab and the package registries. It therefore
-#     CANNOT curl a Divinci host — by design, and that is not a bug to fix by
-#     widening EGRESS_ALLOWED_HOSTS. What it buys is local computation and
-#     `git clone` of our own repos, i.e. verifying a claim against source the
-#     way Hermes Local does on the MacBook.
+#     allowlist is GitHub, GitLab and the package registries. Verified in
+#     production: `curl https://api.divinci.app/health` returns curl error 7
+#     via 127.0.0.1:3128. What it buys is local computation and `git clone`
+#     of our own repos — verifying a claim against source the way Hermes
+#     Local does on the MacBook.
+#
+# ⚠️ NET EFFECT, STATED PLAINLY SO NOBODY RE-DERIVES IT: a proactive wake
+# still CANNOT make an HTTP request to a Divinci host. The terminal's egress
+# excludes them and the web tools do not exist. So the fleet's single most
+# repeated ask — "a human can settle this in one command: curl -I <url>" —
+# is STILL unanswerable by the fleet. Closing that needs one of: a search
+# provider key (registers web_*), or adding our hosts to
+# EGRESS_ALLOWED_HOSTS. Both are decisions, not oversights.
 #
 # ⚠️ web_extract fetches attacker-controlled CONTENT into a turn whose input
 # was otherwise trusted. That is a real injection vector and is accepted
