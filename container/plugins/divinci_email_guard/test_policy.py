@@ -22,6 +22,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from divinci_email_guard.policy import (  # noqa: E402
     INTERACTIVE_PLATFORMS,
+    PROACTIVE_ALLOWED_TOOLS,
+    PROACTIVE_EXTRA_TOOLS,
+    PROACTIVE_SESSION_KEY,
+    is_proactive,
     REJECTED_FOR_UNATTENDED,
     UNATTENDED_ALLOWED_TOOLS,
     decide,
@@ -309,3 +313,143 @@ class TestCalendlyOnTheUnattendedPath:
 
     def test_the_documented_rejections_are_not_also_allowed(self):
         assert not (REJECTED_FOR_UNATTENDED & UNATTENDED_ALLOWED_TOOLS)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# The PROACTIVE tier
+#
+# Every test asserts BOTH directions, for the reason in the module docstring:
+# a tier that widened nothing would pass a block-only suite while leaving the
+# fleet exactly as tool-starved as before, and the two are indistinguishable
+# from outside the container.
+# ══════════════════════════════════════════════════════════════════════════
+
+EMAIL = ("api_server", None)
+WAKE = ("api_server", PROACTIVE_SESSION_KEY)
+
+
+class TestTheProactiveTierWidensOnlyForItsOwnKey:
+    def test_a_wake_may_run_the_bounded_terminal(self):
+        # The capability the whole tier exists for: three agents spent days
+        # ending wakes with "a human can settle this in one command".
+        assert decide("mcp__divinci_terminal__terminal_exec", *WAKE) is None
+
+    def test_email_may_NOT_run_the_bounded_terminal(self):
+        assert decide("mcp__divinci_terminal__terminal_exec", *EMAIL) is not None
+
+    def test_a_wake_may_search_the_web(self):
+        assert decide("web_search", *WAKE) is None
+        assert decide("web_extract", *WAKE) is None
+
+    def test_email_may_NOT_search_the_web(self):
+        assert decide("web_search", *EMAIL) is not None
+        assert decide("web_extract", *EMAIL) is not None
+
+    def test_a_wake_keeps_everything_the_narrow_set_had(self):
+        # Widening must be strictly additive: a tier that traded Fulcrum
+        # access for a terminal would break task filing, which is the one
+        # thing the fleet already does well.
+        for tool in UNATTENDED_ALLOWED_TOOLS:
+            assert decide(tool, *WAKE) is None, tool
+
+
+class TestTheTierFailsClosed:
+    """An unreadable, absent, or unrecognised key must NEVER widen."""
+
+    @pytest.mark.parametrize("key", [
+        None, "", "   ", "divinci-internal", "divinci-internal-proactiv",
+        "proactive", "DIVINCI-INTERNAL-PROACTIVE", "divinci-internal-proactive-x",
+        "x-divinci-internal-proactive",
+    ])
+    def test_a_near_miss_key_gets_the_narrow_set(self, key):
+        assert decide("mcp__divinci_terminal__terminal_exec", "api_server", key) is not None
+        assert is_proactive(key) is False
+
+    def test_surrounding_whitespace_is_tolerated(self):
+        # `_current_session_key` strips, but the policy must not depend on a
+        # caller having done so — this is the half that can be wrong quietly.
+        assert is_proactive(f"  {PROACTIVE_SESSION_KEY}  ") is True
+
+    def test_two_argument_callers_keep_the_narrow_set(self):
+        # The default argument is a security property, not ergonomics: a new
+        # caller must ASK to be widened, never acquire it by omission.
+        assert decide("mcp__divinci_terminal__terminal_exec", "api_server") is not None
+
+    @pytest.mark.parametrize("platform", ["some_future_platform", "", None, "cron", "acp"])
+    def test_the_key_does_nothing_on_an_unanticipated_platform(self, platform):
+        # The tier needs BOTH axes. `is_interactive` folds an unknown platform
+        # into "unattended", so keying on the session key ALONE would widen a
+        # path nobody has reasoned about. This assertion failed when it did.
+        assert decide("web_search", platform, PROACTIVE_SESSION_KEY) is not None
+        assert is_proactive(PROACTIVE_SESSION_KEY, platform) is False
+
+
+class TestTheCredentialReachingReadsStayBlockedOnBOTHPaths:
+    """The guard's own rejection note is right, and the wider tier does not
+    revisit it.
+
+    `search_files` and `session_search` run as `hermes` — the uid owning
+    ~/.hermes/ — so `search_files(pattern="API_KEY|sk-", path="~/.hermes")`
+    returns provider credentials, and `session_search` returns messages from
+    past sessions that have held real production keys. Neither becomes safe
+    because the INPUT was trusted: the credential is reachable either way.
+    """
+
+    @pytest.mark.parametrize("tool", ["search_files", "session_search"])
+    def test_blocked_for_email(self, tool):
+        assert decide(tool, *EMAIL) is not None
+
+    @pytest.mark.parametrize("tool", ["search_files", "session_search"])
+    def test_blocked_for_a_proactive_wake_TOO(self, tool):
+        assert decide(tool, *WAKE) is not None
+
+    @pytest.mark.parametrize("tool", ["search_files", "session_search"])
+    def test_absent_from_both_allowlists(self, tool):
+        assert tool not in UNATTENDED_ALLOWED_TOOLS
+        assert tool not in PROACTIVE_ALLOWED_TOOLS
+
+    @pytest.mark.parametrize("tool", ["read_file", "write_file", "execute_code", "terminal"])
+    def test_the_BUILT_IN_execution_tools_stay_blocked_on_a_wake(self, tool):
+        # ⚠️ The names collide with the bounded terminal's and the boundaries
+        # do not. `mcp__divinci_terminal__read_file` runs as uid 10002 and is
+        # denied ~/.hermes/.env; the bare `read_file` runs as `hermes` and
+        # returned every provider key in one call on 2026-07-27. Allowing the
+        # first must never drag in the second.
+        assert decide(tool, *WAKE) is not None
+
+
+class TestTheExtraSetIsExactlyWhatWasReasonedAbout:
+    def test_extras_are_the_bounded_terminal_plus_web(self):
+        assert PROACTIVE_EXTRA_TOOLS == {
+            "web_search",
+            "web_extract",
+            "mcp__divinci_terminal__terminal_exec",
+            "mcp__divinci_terminal__read_file",
+            "mcp__divinci_terminal__list_files",
+            "mcp__divinci_terminal__write_file",
+            "mcp__divinci_terminal__git_clone",
+        }
+
+    def test_every_extra_mcp_tool_is_the_BOUNDED_terminal(self):
+        # A future entry pointing at another MCP server would inherit this
+        # tier's trust without inheriting uid 10002, the egress allowlist, or
+        # the credential-file denial that justify it.
+        for tool in PROACTIVE_EXTRA_TOOLS:
+            if tool.startswith("mcp__"):
+                assert tool.startswith("mcp__divinci_terminal__"), tool
+
+    def test_no_extra_would_be_rewritten_by_the_sanitizer(self):
+        # Hermes registers MCP tools through re.sub(r"[^A-Za-z0-9_]", "_"),
+        # so a hyphen written here fails CLOSED and silently — reading as
+        # "the terminal doesn't work" rather than as a typo.
+        import re
+        for tool in PROACTIVE_EXTRA_TOOLS:
+            assert re.sub(r"[^A-Za-z0-9_]", "_", tool) == tool, tool
+
+    def test_the_tier_is_strictly_additive(self):
+        assert UNATTENDED_ALLOWED_TOOLS < PROACTIVE_ALLOWED_TOOLS
+
+    def test_slack_is_still_wider_than_both(self):
+        # The ordering that must hold: slack > proactive > unattended.
+        assert decide("anything_at_all", "slack") is None
+        assert decide("anything_at_all", *WAKE) is not None

@@ -112,3 +112,63 @@ describe("divinci_email_guard: the reasoning survives an edit", () => {
     expect(startHermes).toContain("check_execute_code_guard");
   });
 });
+
+/**
+ * ── The PROACTIVE trust tier ──────────────────────────────────────────────
+ *
+ * The guard widens an unattended turn's toolset when the container sees the
+ * session key `divinci-internal-proactive`. Whether a value in that namespace
+ * can REACH the container is therefore the security boundary, and it lives
+ * here in the Worker rather than in the Python policy — which cannot see it.
+ *
+ * Two rules, and neither is sufficient alone:
+ *   1. the customer-facing proxy REFUSES the reserved namespace;
+ *   2. the internal chat route MINTS it, only from `X-Divinci-Trigger`.
+ *
+ * Rule 1 is the one that is easy to lose: `/hosted/agent/proxy/*` forwards
+ * `x-hermes-session-key` VERBATIM from the caller, and `/api/v1/hermes-proxy`
+ * reads it straight off the customer's request headers. Delete rule 1 and any
+ * customer holding a proxy key can hand themselves the bounded terminal.
+ */
+describe("the proactive tier's trust signal", () => {
+  const hosted = read("src/routes/hosted.ts");
+
+  it("REFUSES a reserved session key on the customer-facing proxy", () => {
+    expect(hosted).toContain("isReservedSessionKey(sessionKey)");
+    expect(hosted).toContain("reserved_session_key");
+  });
+
+  it("refuses BEFORE forwarding the header, not after", () => {
+    // Order is the whole control: a check placed after the `headers.set`
+    // would 400 the response while the container had already been handed
+    // the widened signal on a prior line.
+    const refusal = hosted.indexOf("isReservedSessionKey(sessionKey)");
+    const forward = hosted.indexOf("headers.set('x-hermes-session-key', sessionKey)");
+    expect(refusal).toBeGreaterThan(-1);
+    expect(forward).toBeGreaterThan(-1);
+    expect(refusal).toBeLessThan(forward);
+  });
+
+  it("matches the whole reserved NAMESPACE, not just the one live value", () => {
+    // A future second signal (…-replay, …-eval) must be refused the day it
+    // is added, not the day someone remembers to extend this list.
+    expect(hosted).toContain("const DIVINCI_INTERNAL_SESSION_PREFIX = 'divinci-internal-'");
+    expect(hosted).toMatch(/startsWith\(DIVINCI_INTERNAL_SESSION_PREFIX\)/);
+  });
+
+  it("MINTS the key rather than forwarding one the caller supplied", () => {
+    // The caller controls only a trigger NAME, compared against one literal.
+    // If this ever became a forward, the trigger would turn into a
+    // capability token that any /hosted caller could present.
+    expect(hosted).toMatch(/x-divinci-trigger'\s*\)\s*\?\?\s*''\)\.trim\(\)\.toLowerCase\(\)\s*===\s*'proactive'/);
+    expect(hosted).toContain("upstreamHeaders['X-Hermes-Session-Key'] = PROACTIVE_SESSION_KEY");
+  });
+
+  it("uses the SAME literal the Python policy compares against", () => {
+    // Two repos, two languages, one string. A drift here fails closed and
+    // silently: the fleet quietly keeps the 15-tool set and nothing errors.
+    const policy = read("container/plugins/divinci_email_guard/policy.py");
+    expect(hosted).toContain("const PROACTIVE_SESSION_KEY = 'divinci-internal-proactive'");
+    expect(policy).toContain('PROACTIVE_SESSION_KEY = "divinci-internal-proactive"');
+  });
+});

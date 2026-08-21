@@ -22,7 +22,13 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, Optional
 
-from .policy import UNATTENDED_ALLOWED_TOOLS, decide, normalize_platform
+from .policy import (
+    PROACTIVE_ALLOWED_TOOLS,
+    UNATTENDED_ALLOWED_TOOLS,
+    decide,
+    is_proactive,
+    normalize_platform,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +51,28 @@ def _current_platform() -> str:
         return normalize_platform(os.getenv("HERMES_SESSION_PLATFORM", ""))
 
 
+def _current_session_key() -> str:
+    """Read the bound session key (from the ``X-Hermes-Session-Key`` header).
+
+    Same ContextVar-then-env fallback as the platform read above, and for the
+    same reason: the ContextVar is TASK-LOCAL, so a proactive wake and an
+    inbound email running concurrently in one container cannot read each
+    other's value. That property is what makes a per-turn trust tier sound
+    rather than merely convenient.
+
+    ⚠️ Returns "" on ANY failure. An unreadable session key must degrade to
+    the NARROW toolset, never the wide one — the whole tier fails closed.
+    """
+    try:
+        from gateway.session_context import get_session_env
+
+        return (get_session_env("HERMES_SESSION_KEY", "") or "").strip()
+    except Exception:
+        import os
+
+        return (os.getenv("HERMES_SESSION_KEY", "") or "").strip()
+
+
 def _on_pre_tool_call(
     tool_name: str = "",
     args: Optional[Dict[str, Any]] = None,
@@ -52,7 +80,8 @@ def _on_pre_tool_call(
 ) -> Optional[Dict[str, str]]:
     """Veto a tool call that an unattended turn may not make."""
     platform = _current_platform()
-    message = decide(tool_name, platform)
+    session_key = _current_session_key()
+    message = decide(tool_name, platform, session_key)
 
     if message is None:
         return None
@@ -66,10 +95,15 @@ def _on_pre_tool_call(
     # reaches this hook through tool arguments, and that content is exactly
     # the untrusted, potentially personal material the email prompt wraps in
     # a data boundary. Logging it would undo that.
+    # `tier` matters as much as `tool`: "blocked terminal_exec on api_server"
+    # is expected for mail and a BUG for a wake, and the two are otherwise
+    # indistinguishable in the log. Never log the session key itself — it is
+    # a routing value, and logging it invites treating it as a secret.
     logger.warning(
-        "[divinci-email-guard] blocked tool=%s platform=%s",
+        "[divinci-email-guard] blocked tool=%s platform=%s tier=%s",
         tool_name,
         platform or "unknown",
+        "proactive" if is_proactive(session_key) else "unattended",
     )
 
     return {"action": "block", "message": message}
@@ -80,6 +114,8 @@ def register(ctx) -> None:
     # Emitted once at load. Its ABSENCE from the boot log is the signal that
     # `plugins.enabled` is missing the key and the guard is not running.
     logger.info(
-        "[divinci-email-guard] active — unattended turns restricted to %d tools",
+        "[divinci-email-guard] active — unattended turns restricted to %d tools, "
+        "proactive wakes to %d",
         len(UNATTENDED_ALLOWED_TOOLS),
+        len(PROACTIVE_ALLOWED_TOOLS),
     )

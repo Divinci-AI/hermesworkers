@@ -264,7 +264,28 @@ hosted.all('/hosted/agent/proxy/*', async (c) => {
   const accept = c.req.header('accept');
   if (accept) headers.set('accept', accept);
   // Pass a multi-user session key through if the client sent one.
+  //
+  // ⛔ EXCEPT our own reserved namespace. This header is forwarded VERBATIM
+  // from the customer's request (`/api/v1/hermes-proxy/*` reads it straight
+  // off `req.headers`), and the container's guard grants a wider toolset to
+  // one value in that namespace. Without this refusal, any customer holding
+  // a proxy API key could set it and hand themselves the bounded terminal on
+  // an unattended turn.
+  //
+  // REFUSE rather than strip: silently dropping it would let a caller
+  // believe their session scoping applied when it did not, and a 400 says
+  // which header is at fault. Nothing legitimate needs this prefix — it is
+  // minted by the internal chat route, never sent by a client.
   const sessionKey = c.req.header('x-hermes-session-key');
+  if (isReservedSessionKey(sessionKey)) {
+    return c.json(
+      {
+        error: 'reserved_session_key',
+        message: `X-Hermes-Session-Key must not begin with "${DIVINCI_INTERNAL_SESSION_PREFIX}" — that namespace is reserved.`,
+      },
+      400,
+    );
+  }
   if (sessionKey) headers.set('x-hermes-session-key', sessionKey);
   headers.set('authorization', `Bearer ${gatewayToken}`);
 
@@ -287,6 +308,32 @@ hosted.all('/hosted/agent/proxy/*', async (c) => {
 });
 
 /** Per-agent chat completions — same behavior as single-tenant, scoped by agent. */
+/**
+ * Session-key namespace reserved for Divinci's own internal trust signals.
+ *
+ * The container's `divinci_email_guard` plugin widens an unattended turn's
+ * toolset when it sees `divinci-internal-proactive` — so whether a value in
+ * this namespace can reach the container IS the security boundary.
+ *
+ * ⚠️ It is NOT a secret and must never become one. `X-Hermes-Session-Key` is
+ * echoed in logs and used for memory scoping; a guessable value is fine
+ * PROVIDED no customer-facing path can set it. That is what the two rules
+ * below enforce, and neither is sufficient alone:
+ *
+ *   1. the proxy route REFUSES this namespace from the caller (it forwards
+ *      the header verbatim, so without this any customer holding a
+ *      `/api/v1/hermes-proxy` key could mint the signal themselves);
+ *   2. this route MINTS it, and only from `X-Divinci-Trigger`, which arrives
+ *      behind the service-secret auth every /hosted route already requires.
+ */
+const DIVINCI_INTERNAL_SESSION_PREFIX = 'divinci-internal-';
+const PROACTIVE_SESSION_KEY = 'divinci-internal-proactive';
+
+/** True when a caller-supplied session key is trying to enter our namespace. */
+export function isReservedSessionKey(raw: string | undefined | null): boolean {
+  return (raw ?? '').trim().toLowerCase().startsWith(DIVINCI_INTERNAL_SESSION_PREFIX);
+}
+
 hosted.post('/hosted/agent/v1/chat/completions', async (c) => {
   const agentId = c.var.agentId;
   const container = getContainerForAgent(c.env, agentId);
@@ -316,9 +363,27 @@ hosted.post('/hosted/agent/v1/chat/completions', async (c) => {
   }
 
   const body = await c.req.text();
+
+  // Divinci's public-api declares WHY this turn is running. Only 'proactive'
+  // — its own scheduled wake, whose prompt it built from its own transcript
+  // — earns the widened toolset; inbound email and Slack send nothing and
+  // therefore stay on the narrow set by omission rather than by check.
+  //
+  // ⚠️ Derived from the header, never forwarded from one. A caller cannot
+  // hand us a session key here: we mint the value ourselves, so the only
+  // thing the caller controls is a trigger name we compare against one
+  // literal. Any unrecognised trigger yields no session key at all.
+  const upstreamHeaders: Record<string, string> = {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${gatewayToken}`,
+  };
+  if ((c.req.header('x-divinci-trigger') ?? '').trim().toLowerCase() === 'proactive') {
+    upstreamHeaders['X-Hermes-Session-Key'] = PROACTIVE_SESSION_KEY;
+  }
+
   const upstream = new Request(`http://localhost:${HERMES_API_PORT}/v1/chat/completions`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${gatewayToken}` },
+    headers: upstreamHeaders,
     body,
   });
 
