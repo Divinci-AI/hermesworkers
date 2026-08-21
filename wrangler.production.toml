@@ -130,6 +130,24 @@ HERMES_TERMINAL_ENABLED = "true"
 # Cost, stated plainly: interactive Slack turns now need an Allow click.
 # Staging keeps "off" for frictionless dogfooding, where no inbound email
 # endpoint is wired.
+# ⛔ REVOKED 2026-08-21, hours after the tier shipped. The proactive tier
+# grants the bounded terminal to UNATTENDED wakes on the premise that its
+# egress is allowlisted. Verified in production: it is NOT.
+# `curl --noproxy "*" https://example.com` from a wake returns 200, because
+# setup-terminal.sh never ran in this container — no egress-guard process on
+# :3128, no /var/log/hermes-egress-guard.out, and no iptables HERMES_TERM
+# chain. The allowlist is therefore advisory HTTP_PROXY env vars that any
+# client can ignore with one flag.
+#
+# Credentials are still out of reach (uid 10002, HOME=/workspace, ~/.hermes
+# unreadable), so this is an EXFILTRATION path rather than a credential one —
+# and a wake can read Fulcrum prospect data over MCP. Unattended is exactly
+# the case with nobody watching, so the grant is revoked until the boundary
+# is repaired. Slack keeps the terminal: a human is present there, and that
+# exposure predates today.
+#
+# Clear this line to restore the tier once setup-terminal.sh is proven to run.
+HERMES_PROACTIVE_TOOLS_DISABLED = "1"
 HERMES_APPROVALS_MODE = "manual"
 # Drop the BUILT-IN toolsets that execute as `hermes`, the uid owning every
 # provider credential in ~/.hermes/.
