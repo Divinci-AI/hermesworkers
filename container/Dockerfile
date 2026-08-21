@@ -16,7 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         clang make pkg-config libffi-dev libssl-dev \
         ripgrep ffmpeg \
         netcat-openbsd iproute2 \
-        iptables sudo \
+        iptables nftables sudo \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
 # `rm -rf /var/lib/apt/lists/*` alone removes the package LISTS but leaves the

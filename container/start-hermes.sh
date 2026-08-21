@@ -501,7 +501,42 @@ fi
 # Gated on HERMES_TERMINAL_ENABLED so a deployment that has not established the
 # boundary (setup-terminal.sh not run, or NET_ADMIN unavailable) does not
 # advertise tools that would fail on every call.
+# ── ESTABLISH THE BOUNDARY FIRST, AND REFUSE THE TOOL IF IT FAILS ─────────
+#
+# setup-terminal.sh's own header says it must run "ONCE at container boot, as
+# root, BEFORE any terminal command is accepted". It did not: the only caller
+# was `ensureTerminalBoundary()` in the WORKER (src/lib/terminal.ts), which
+# runs on the Worker's /api/terminal route. The agent does not use that route
+# — it uses `mcp-terminal-server.js`, which spawns
+# `sudo -u hermes-term hermes-term-exec` directly inside this container.
+#
+# So the boundary was never established on the path that actually carries
+# traffic, and the failure was invisible: commands worked, `id` reported uid
+# 10002, and the allowlist appeared to be enforced because HTTP_PROXY was set.
+# Measured in production 2026-08-21: `curl --noproxy "*" https://example.com`
+# returned 200, nothing listened on :3128, and OUTPUT had no rules at all.
+# The proxy env vars are advisory — any client discards them with one flag.
+#
+# Running it here closes that, and the ORDER is the control: if the boundary
+# cannot be established, the MCP server is not registered at all, so the agent
+# has no terminal rather than an unbounded one. That is the fail-closed posture
+# the script's header promises ("There is no degraded mode").
+#
+# ⚠️ Deliberately NOT fatal to the container. A container that refuses to boot
+# takes Slack and chat down with it, which is a worse failure than losing one
+# tool — the same trade already made for the email guard above. The loss is
+# loud instead: this line is the signal that the terminal is gone and why.
+TERMINAL_BOUNDARY_OK=false
 if [ "${HERMES_TERMINAL_ENABLED:-false}" = "true" ]; then
+  if EGRESS_ALLOWED_HOSTS="${EGRESS_ALLOWED_HOSTS:-}"      EGRESS_PROXY_PORT="${EGRESS_PROXY_PORT:-3128}"      /usr/local/bin/setup-terminal.sh >> "$LOG_FILE" 2>&1; then
+    TERMINAL_BOUNDARY_OK=true
+    echo "[startup] terminal boundary ESTABLISHED (egress guard + owner-match lockdown)" >> "$LOG_FILE"
+  else
+    echo "[startup] ⛔ terminal boundary FAILED — divinci_terminal will NOT be registered; the agent gets no terminal. See setup-terminal output above." >> "$LOG_FILE"
+  fi
+fi
+
+if [ "${HERMES_TERMINAL_ENABLED:-false}" = "true" ] && [ "$TERMINAL_BOUNDARY_OK" = "true" ]; then
   # ⚠️ WRITTEN AS YAML DIRECTLY, NOT VIA `hermes config set` — the SAME bug
   # that silently disabled the plugin above, and it had been breaking this
   # server since it was written.

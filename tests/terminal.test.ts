@@ -373,3 +373,60 @@ describe('deployed egress allowlists', () => {
     });
   }
 });
+
+/**
+ * ── Both routes to the terminal must establish the boundary ───────────────
+ *
+ * The defect this guards: `ensureTerminalBoundary()` (Worker route) ran
+ * setup-terminal.sh, but the agent reaches the terminal through
+ * mcp-terminal-server.js, which spawns `sudo -u hermes-term hermes-term-exec`
+ * directly in the container. That path never established the boundary, so in
+ * production the egress lockdown was simply absent — `curl --noproxy "*"`
+ * reached the internet, nothing listened on :3128, and OUTPUT had no rules.
+ *
+ * Nothing failed loudly, because the proxy env vars made it LOOK enforced.
+ * These assertions exist so the two paths cannot silently diverge again.
+ */
+describe('terminal boundary is established on the container path too', () => {
+  const { readFileSync } = require('node:fs') as typeof import('node:fs');
+  const { join } = require('node:path') as typeof import('node:path');
+  const startHermes = readFileSync(join(__dirname, '..', 'container/start-hermes.sh'), 'utf8');
+  const setupScript = readFileSync(join(__dirname, '..', 'container/setup-terminal.sh'), 'utf8');
+
+  it('boot runs setup-terminal.sh', () => {
+    expect(startHermes).toMatch(/\/usr\/local\/bin\/setup-terminal\.sh/);
+  });
+
+  it('registers the MCP terminal ONLY when the boundary succeeded', () => {
+    // The ordering IS the control: a failed boundary must yield no terminal,
+    // never an unbounded one.
+    expect(startHermes).toContain('TERMINAL_BOUNDARY_OK=false');
+    expect(startHermes).toMatch(/\[ "\$TERMINAL_BOUNDARY_OK" = "true" \]/);
+    const gate = startHermes.indexOf('TERMINAL_BOUNDARY_OK=true');
+    const register = startHermes.indexOf('servers["divinci_terminal"]');
+    expect(gate).toBeGreaterThan(-1);
+    expect(register).toBeGreaterThan(gate);
+  });
+
+  it('says so loudly when the boundary fails', () => {
+    // Losing the terminal silently would read as "the model stopped using it".
+    expect(startHermes).toMatch(/terminal boundary FAILED/);
+  });
+
+  it('does not take the whole container down on failure', () => {
+    // Same trade as the email guard: losing one tool beats losing Slack+chat.
+    expect(startHermes).not.toMatch(/setup-terminal\.sh[^\n]*\|\|\s*exit 1/);
+  });
+
+  it('can clear a chain iptables itself refuses to touch', () => {
+    // iptables-nft cannot represent every nftables chain; -F/-X then fail and
+    // -N fails with "chain already exists", which is exactly the state found
+    // in production. Without an nft fallback the boundary can never recover.
+    expect(setupScript).toMatch(/nft delete chain ip filter HERMES_TERM/);
+    expect(setupScript).toMatch(/nft delete chain inet filter HERMES_TERM/);
+  });
+
+  it('still fails closed if even the nft teardown cannot recover', () => {
+    expect(setupScript).toMatch(/refusing to enable terminal/);
+  });
+});

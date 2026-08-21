@@ -123,7 +123,29 @@ iptables -w 5 -F HERMES_TERM 2>/dev/null || true
 iptables -w 5 -X HERMES_TERM 2>/dev/null || true
 
 if ! iptables -w 5 -N HERMES_TERM 2>/dev/null; then
-  fail "cannot create iptables chain (NET_ADMIN unavailable?); refusing to enable terminal"
+  # The teardown above can leave a chain that `iptables` refuses to touch:
+  #
+  #   iptables v1.8.7 (nf_tables): chain `HERMES_TERM' in table `filter'
+  #   is incompatible, use 'nft' tool.
+  #
+  # iptables-nft cannot represent every chain nftables can hold, so -F and -X
+  # both fail and -N then fails with "chain already exists". Observed in the
+  # production container 2026-08-21, where it left OUTPUT with no rules at all
+  # and terminal egress fully open.
+  #
+  # Reach for `nft` directly to remove it, then retry once. Both families are
+  # attempted because the chain may live in either table.
+  log "iptables could not create HERMES_TERM; attempting nft teardown of a stale/incompatible chain"
+  if command -v nft >/dev/null 2>&1; then
+    nft delete chain ip filter HERMES_TERM 2>/dev/null || true
+    nft delete chain inet filter HERMES_TERM 2>/dev/null || true
+  else
+    log "nft not installed — cannot clear an incompatible chain"
+  fi
+  if ! iptables -w 5 -N HERMES_TERM 2>/dev/null; then
+    fail "cannot create iptables chain (NET_ADMIN unavailable, or a stale nft chain we cannot remove); refusing to enable terminal"
+  fi
+  log "recovered: HERMES_TERM recreated after nft teardown"
 fi
 
 # Loopback — reaches the egress guard (and nothing else useful).
