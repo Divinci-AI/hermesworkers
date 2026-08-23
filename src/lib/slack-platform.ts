@@ -140,6 +140,68 @@ export function buildSlackEnvFile(body: SlackApplyBody): string | null {
 }
 
 /**
+ * SLACK_* keys the Divinci panel OWNS unconditionally: they are removed from
+ * the live `.env` on every apply and re-added only if this apply sets them.
+ *
+ * The distinction matters for the ones written CONDITIONALLY. `buildSlackEnvFile`
+ * emits `SLACK_ALLOW_ALL_USERS` only when it is true, so if these keys were
+ * merely "replaced when present" then turning open access back OFF would leave
+ * the previous `SLACK_ALLOW_ALL_USERS=true` in place — a save that reads as
+ * tightening access while actually changing nothing.
+ */
+const PANEL_OWNED_SLACK_KEYS = [
+  'SLACK_BOT_TOKEN',
+  'SLACK_APP_TOKEN',
+  'SLACK_ALLOW_ALL_USERS',
+  'SLACK_ALLOWED_USERS',
+  'SLACK_ALLOWED_CHANNELS',
+  'SLACK_FREE_RESPONSE_CHANNELS',
+] as const;
+
+/**
+ * Home-channel keys are SHARED ownership: the panel writes them, and so does
+ * Hermes' own `/sethome` slash command — which persists via
+ * `save_env_value("SLACK_HOME_CHANNEL", ...)` into the very same `.env`
+ * (hermes-agent gateway/slash_commands.py::_handle_set_home_command). Env is
+ * not a second-class path for this setting; it is the ONLY path. There is no
+ * `hermes config set` key for a home channel.
+ *
+ * So they are owned only when this apply actually supplies one. An apply that
+ * leaves the panel field blank must PRESERVE whatever `/sethome` wrote, the
+ * same "absent means unchanged" rule the connector secrets use.
+ *
+ * `_THREAD_ID` follows the channel: `/sethome` writes it alongside (empty when
+ * run outside a thread) and the panel cannot express a thread, so carrying a
+ * stale thread id onto a newly-chosen channel would deliver cron output into a
+ * thread that belongs to a different conversation.
+ */
+const HOME_CHANNEL_SLACK_KEYS = [
+  'SLACK_HOME_CHANNEL',
+  'SLACK_HOME_CHANNEL_NAME',
+  'SLACK_HOME_CHANNEL_THREAD_ID',
+] as const;
+
+/**
+ * The SLACK_* keys this apply should strip from the live `.env` before
+ * appending the durable file.
+ *
+ * Everything NOT listed is preserved. Hermes supports far more SLACK_* vars
+ * than the panel models (SLACK_STRICT_MENTION, SLACK_REACTIONS,
+ * SLACK_ALLOW_BOTS, …); a blanket `^SLACK_` strip silently deletes every one
+ * of them on a save that was only meant to change the mention setting.
+ */
+export function slackEnvKeysOwnedByThisApply(body: SlackApplyBody): string[] {
+  const keys: string[] = [...PANEL_OWNED_SLACK_KEYS];
+  if (body.homeChannel) keys.push(...HOME_CHANNEL_SLACK_KEYS);
+  return keys;
+}
+
+/** An ERE matching `KEY=` at line start for each owned key. */
+export function slackOwnedKeyStripPattern(body: SlackApplyBody): string {
+  return `^(${slackEnvKeysOwnedByThisApply(body).join('|')})=`;
+}
+
+/**
  * Build a shell script that (as root) writes or removes the durable Slack env
  * file and applies hermes config knobs for threading / mention behavior.
  * Content is base64-encoded so token chars never break the shell.
@@ -179,7 +241,15 @@ export function buildSlackApplyShell(body: SlackApplyBody): string {
     // Also merge into the live .env immediately so a running gateway that
     // re-reads env (or a soft restart) sees tokens without waiting for start-hermes.
     `if [ -f ${shellSingleQuote(`${home}/.hermes/.env`)} ]; then`,
-    `  grep -vE '^SLACK_' ${shellSingleQuote(`${home}/.hermes/.env`)} > /tmp/hermes-env-merge || true`,
+    // grep exits 1 when it selects no lines — a legitimate result when the
+    // live .env held nothing but keys this apply owns. Swallowing every
+    // non-zero with `|| true` would treat a genuine grep FAILURE the same way
+    // and silently drop the whole non-Slack environment, so only >1 aborts.
+    `  set +e`,
+    `  grep -vE ${shellSingleQuote(slackOwnedKeyStripPattern(body))} ${shellSingleQuote(`${home}/.hermes/.env`)} > /tmp/hermes-env-merge`,
+    `  rc=$?`,
+    `  set -e`,
+    `  if [ "$rc" -gt 1 ]; then echo "slack_env_merge_failed=1" >&2; exit 1; fi`,
     `  cat ${shellSingleQuote(file)} >> /tmp/hermes-env-merge`,
     `  mv /tmp/hermes-env-merge ${shellSingleQuote(`${home}/.hermes/.env`)}`,
     `  chmod 600 ${shellSingleQuote(`${home}/.hermes/.env`)}`,

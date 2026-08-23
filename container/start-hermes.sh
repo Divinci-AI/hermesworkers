@@ -91,13 +91,44 @@ fi
 # SLACK_ALLOWED_CHANNELS.
 SLACK_PLATFORM_ENV="$HOME_DIR/.hermes/divinci-platforms/slack.env"
 if [ -f "$SLACK_PLATFORM_ENV" ]; then
-    # Drop any stale SLACK_* lines first, then append the durable file.
-    # (Rebuild above never writes SLACK_*; this is belt-and-braces for a
-    # previous soft-merge that left keys in the live .env.)
-    grep -vE '^SLACK_' "$HERMES_ENV_FILE" > "${HERMES_ENV_FILE}.noslack" 2>/dev/null || cp "$HERMES_ENV_FILE" "${HERMES_ENV_FILE}.noslack"
+    # Replace only the keys the panel OWNS, then append the durable file.
+    #
+    # This used to be a blanket `grep -vE '^SLACK_'`, which made every boot
+    # delete SLACK_* keys the panel does not model — including the home channel
+    # that Hermes' own `/sethome` had just written into this same file
+    # (gateway/slash_commands.py::_handle_set_home_command calls
+    # save_env_value("SLACK_HOME_CHANNEL", ...)). The result was that
+    # `/sethome` appeared to work and then silently did not survive a restart,
+    # while the panel reported the agent as applied and live.
+    #
+    # The rule, identical to slackOwnedKeyStripPattern() in
+    # src/lib/slack-platform.ts, is derived from the durable file itself so the
+    # two cannot drift: strip the unconditionally-owned keys, plus whatever
+    # slack.env actually sets, plus SLACK_HOME_CHANNEL_THREAD_ID when (and only
+    # when) slack.env sets a home channel. Preserve everything else.
+    SLACK_OWNED='SLACK_BOT_TOKEN|SLACK_APP_TOKEN|SLACK_ALLOW_ALL_USERS|SLACK_ALLOWED_USERS|SLACK_ALLOWED_CHANNELS|SLACK_FREE_RESPONSE_CHANNELS'
+    SLACK_FILE_KEYS="$(sed -nE 's/^(SLACK_[A-Z0-9_]+)=.*/\1/p' "$SLACK_PLATFORM_ENV" | sort -u | tr '\n' '|' | sed 's/|$//')"
+    if [ -n "$SLACK_FILE_KEYS" ]; then
+        SLACK_OWNED="${SLACK_OWNED}|${SLACK_FILE_KEYS}"
+    fi
+    if grep -qE '^SLACK_HOME_CHANNEL=' "$SLACK_PLATFORM_ENV"; then
+        SLACK_OWNED="${SLACK_OWNED}|SLACK_HOME_CHANNEL_NAME|SLACK_HOME_CHANNEL_THREAD_ID"
+    fi
+    # grep exits 1 when it selects NO lines, which here is a legitimate result
+    # (the live .env held nothing but owned keys). The previous `|| cp` fallback
+    # could not tell that apart from a real error and restored the file it had
+    # just filtered — so a live .env consisting only of owned keys came through
+    # completely unfiltered. Only exit >1 is an actual grep failure.
+    set +e
+    grep -vE "^(${SLACK_OWNED})=" "$HERMES_ENV_FILE" > "${HERMES_ENV_FILE}.noslack" 2>/dev/null
+    SLACK_GREP_RC=$?
+    set -e
+    if [ "$SLACK_GREP_RC" -gt 1 ]; then
+        cp "$HERMES_ENV_FILE" "${HERMES_ENV_FILE}.noslack"
+    fi
     cat "${HERMES_ENV_FILE}.noslack" "$SLACK_PLATFORM_ENV" > "$HERMES_ENV_FILE"
     rm -f "${HERMES_ENV_FILE}.noslack"
-    echo "[startup] merged Slack platform env from $SLACK_PLATFORM_ENV" >> "$LOG_FILE"
+    echo "[startup] merged Slack platform env from $SLACK_PLATFORM_ENV (owned=${SLACK_OWNED})" >> "$LOG_FILE"
 fi
 
 chmod 600 "$HERMES_ENV_FILE"
