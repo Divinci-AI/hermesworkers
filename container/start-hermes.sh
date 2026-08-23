@@ -673,6 +673,40 @@ else
   echo "[startup] fulcrum MCP NOT registered (HERMES_FULCRUM_MCP_ENABLED!=true)" >> "$LOG_FILE"
 fi
 
+# ── Buffer MCP (remote HTTP) ───────────────────────────────────────────────
+#
+# Divinci dogfood only. Used to drain the changelog idea column onto LinkedIn
+# and X via addToQueue. Gated off unless HERMES_BUFFER_MCP_ENABLED=true.
+# Hermes resolves ${env:VAR} in headers from ~/.hermes/.env, so the Personal
+# Access key never needs to land in config.yaml as plaintext in a loggable
+# config-set argv.
+if [ "${HERMES_BUFFER_MCP_ENABLED:-false}" = "true" ] || [ "${HERMES_BUFFER_MCP_ENABLED:-}" = "1" ]; then
+  BUFFER_URL="https://mcp.buffer.com/mcp"
+  if [ -n "${MCP_BUFFER_API_KEY:-}" ]; then
+    if [ -f "$HERMES_ENV_FILE" ]; then
+      grep -vE '^MCP_BUFFER_API_KEY=' "$HERMES_ENV_FILE" > "${HERMES_ENV_FILE}.nobuffer" 2>/dev/null \
+        || cp "$HERMES_ENV_FILE" "${HERMES_ENV_FILE}.nobuffer"
+      cat "${HERMES_ENV_FILE}.nobuffer" > "$HERMES_ENV_FILE"
+      rm -f "${HERMES_ENV_FILE}.nobuffer"
+    fi
+    printf 'MCP_BUFFER_API_KEY=%s\n' "${MCP_BUFFER_API_KEY}" >> "$HERMES_ENV_FILE"
+    chmod 600 "$HERMES_ENV_FILE"
+  fi
+  hermes config set mcp_servers.buffer.url "${BUFFER_URL}" >> "$LOG_FILE" 2>&1 || true
+  hermes config set mcp_servers.buffer.enabled true >> "$LOG_FILE" 2>&1 || true
+  hermes config set mcp_servers.buffer.timeout 120 >> "$LOG_FILE" 2>&1 || true
+  hermes config set mcp_servers.buffer.connect_timeout 30 >> "$LOG_FILE" 2>&1 || true
+  hermes config set mcp_servers.buffer.skip_preflight true >> "$LOG_FILE" 2>&1 || true
+  if [ -n "${MCP_BUFFER_API_KEY:-}" ]; then
+    hermes config set mcp_servers.buffer.headers.Authorization 'Bearer ${env:MCP_BUFFER_API_KEY}' >> "$LOG_FILE" 2>&1 || true
+    echo "[startup] registered buffer MCP -> ${BUFFER_URL} (token=set)" >> "$LOG_FILE"
+  else
+    echo "[startup] registered buffer MCP -> ${BUFFER_URL} (token=MISSING — changelog queue duty cannot run)" >> "$LOG_FILE"
+  fi
+else
+  echo "[startup] buffer MCP NOT registered (HERMES_BUFFER_MCP_ENABLED!=true)" >> "$LOG_FILE"
+fi
+
 # Optional defense in depth: drop the .env after the gateway is up, so even a
 # regression in the approval config finds nothing to read.
 #
