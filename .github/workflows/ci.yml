@@ -103,7 +103,29 @@ jobs:
           docker run --rm --entrypoint bash \
             -v "$PWD/container/tests:/tests:ro" \
             hermesworkers:ci /tests/config-contract.sh
+      # ⚠️ `--entrypoint` IS LOAD-BEARING. WITHOUT IT THIS STEP HANGS FOREVER.
+      #
+      # The base image (cloudflare/sandbox) sets ENTRYPOINT
+      # ["/container-server/sandbox"], so `docker run <img> /usr/local/bin/hermes
+      # --version` executes `sandbox /usr/local/bin/hermes --version`: the
+      # sandbox server starts, ignores the arguments entirely, and runs until
+      # the job's 6-hour timeout.
+      #
+      # So this step never invoked hermes and COULD NOT FAIL — it could only
+      # hang. It went unnoticed because ci.yml triggered on `branches: [main]`
+      # while all work landed elsewhere, so it had effectively never executed.
+      # Turning CI on in 441c9db is what surfaced it, on the very first run.
+      #
+      # A check that cannot fail is not a weak check, it is an absent one that
+      # reports as present. Same class as `model_stored=` logging an argparse
+      # error as a value, and as `hermes config set model` printing ✓ while
+      # destroying the mapping.
+      #
+      # `timeout` bounds it so a future entrypoint change cannot silently
+      # restore the hang: it would fail loudly instead of costing six hours.
       - name: Smoke check
         run: |
-          docker run --rm hermesworkers:ci /usr/local/bin/hermes --version
-          docker run --rm hermesworkers:ci /usr/local/bin/hermes dashboard --help > /dev/null
+          timeout 60 docker run --rm --entrypoint /usr/local/bin/hermes \
+            hermesworkers:ci --version
+          timeout 60 docker run --rm --entrypoint /usr/local/bin/hermes \
+            hermesworkers:ci dashboard --help > /dev/null
