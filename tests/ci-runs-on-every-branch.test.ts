@@ -6,11 +6,14 @@ import { join } from 'node:path';
  * CI that watches a branch nobody uses is indistinguishable from CI that passes.
  *
  * Until 2026-08-25 `ci.yml` triggered on `branches: [main]` while every commit
- * landed on `feat/multitenant-hosted`. The workflow ran ONCE in three months —
- * on main, and it failed. Across that window the suite grew to 283 tests, the
- * container image job verified nothing, and `npm audit` never ran. Guards were
- * authored, reviewed and mutation-tested against a runner that would never
- * execute them.
+ * landed on `feat/multitenant-hosted`. Four runs in the repo's entire history,
+ * all failures, none between 2026-07-16 and 2026-08-25. Across that window the
+ * suite grew to 283 tests, the container image job verified nothing, and
+ * `npm audit` never ran. Guards were authored, reviewed and mutation-tested
+ * against a runner that would never execute them.
+ *
+ * (Counts read from the /actions/runs API. `gh run list` returned a partial
+ * listing and an earlier version of this note repeated its wrong number.)
  *
  * The defect is the ALLOWLIST, not the value in it: an enumerated branch list
  * is a promise to keep the list current, and nothing fails when that promise

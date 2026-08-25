@@ -3,11 +3,18 @@ name: CI
 # ⚠️ NO BRANCH FILTER, DELIBERATELY.
 #
 # This was `branches: [main]` on both triggers. All work happens on
-# feat/multitenant-hosted, so between 2026-05-11 and 2026-08-25 this workflow
-# ran EXACTLY ONCE — on main, and it failed. In that window the suite grew to
-# 283 tests, the image build job never verified a single image, and
-# `npm audit` never ran. Guards were written, reviewed and mutation-tested
-# against a runner that was never going to execute them.
+# feat/multitenant-hosted, so this workflow had FOUR runs in its entire history
+# and none at all between 2026-07-16 and 2026-08-25 — every one of those four a
+# failure. In that window the suite grew to 283 tests, the image build job
+# verified no image, and `npm audit` never ran. Guards were written, reviewed
+# and mutation-tested against a runner that was never going to execute them.
+#
+# ⚠️ The first version of this comment said "ran EXACTLY ONCE, on 2026-05-11".
+# That came from `gh run list`, which returned a PARTIAL list; the API
+# (`/actions/runs`) reports total_count=4 with a different oldest date. If you
+# need run history, read the API — the CLI's default listing silently truncates,
+# which is the same class of wrong-because-the-surface-lied that this whole
+# workflow change is about.
 #
 # A branch allowlist is a promise that the list stays current. It did not, and
 # the failure is silent: a workflow that never triggers looks identical to a
