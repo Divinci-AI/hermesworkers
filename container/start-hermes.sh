@@ -197,11 +197,34 @@ EFFECTIVE_MODEL="${AGENT_MODEL:-${HERMES_DEFAULT_MODEL:-cfai/@cf/deepseek-ai/dee
 # `model` is a MAPPING in config.yaml (`default` / `provider` / `base_url`), so
 # `hermes config set model "<id>"` writes a scalar over a mapping. Newer CLIs
 # (v0.20.0 / 2026.8.3) silently repair that — "Redirecting bare 'model' to
-# 'model.default'" — but the pinned container CLI (HERMES_VERSION=v2026.7.7.2)
-# does NOT, and rejects it.
+# 'model.default'" — but the pinned container CLI (v0.18.2 / 2026.7.7.2) has no
+# such redirect.
 #
-# That rejection was invisible twice over: `|| true` swallowed the exit code,
-# and the `echo` below printed $EFFECTIVE_MODEL whether or not it was stored.
+# ⚠️ AND IT DOES NOT REJECT IT. It SUCCEEDS. Measured inside the deployed image:
+#
+#     before:  model: {default: '@cf/a/b', provider: cfai, base_url: https://…}
+#     $ hermes config set model "cfai/@cf/x"
+#     ✓ Set model = cfai/@cf/x    (exit 0)
+#     after:   model: cfai/@cf/x
+#
+# The ENTIRE mapping is destroyed — default, provider and base_url all gone —
+# and any later `model.<leaf>` set rebuilds `model` as a dict holding only that
+# leaf. So the gateway loaded a `model` with no provider and no base_url, could
+# not resolve the `cfai/` prefix, fell through to a Gemini default, and answered
+# 404 on every turn.
+#
+# ⚠️ THE ORIGINAL DIAGNOSIS OF THIS WAS WRONG, AND THE ERROR IS INSTRUCTIVE.
+# It was recorded as "the set is REJECTED", inferred from the absence of a
+# `✓ Set model` line in the boot log while the two `providers.cfai.*` sets above
+# printed theirs. The real cause of that absence: those two lines redirect
+# `>> "$LOG_FILE" 2>&1` and the model line did not, so its ✓ went to the
+# script's stdout instead. An inference from a MISSING LOG LINE, where the line
+# was missing for an unrelated mundane reason.
+#
+# The failure was invisible three ways over: `|| true` swallowed an exit code
+# that was zero anyway, the `echo` below printed $EFFECTIVE_MODEL whether or not
+# it was stored, and the one command whose output would have shown the truth was
+# the only one not being captured.
 # So on 2026-08-25 the boot log asserted
 # `model=cfai/@cf/deepseek-ai/deepseek-v4-pro-0813` while config.yaml still held
 # a Gemini model, every turn routed through gemini_native_adapter, and Gemini

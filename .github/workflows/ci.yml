@@ -1,10 +1,22 @@
 name: CI
 
+# ⚠️ NO BRANCH FILTER, DELIBERATELY.
+#
+# This was `branches: [main]` on both triggers. All work happens on
+# feat/multitenant-hosted, so between 2026-05-11 and 2026-08-25 this workflow
+# ran EXACTLY ONCE — on main, and it failed. In that window the suite grew to
+# 283 tests, the image build job never verified a single image, and
+# `npm audit` never ran. Guards were written, reviewed and mutation-tested
+# against a runner that was never going to execute them.
+#
+# A branch allowlist is a promise that the list stays current. It did not, and
+# the failure is silent: a workflow that never triggers looks identical to a
+# workflow that passes. Enumerate nothing — run wherever work lands.
+#
+# Pinned by tests/ci-runs-on-every-branch.test.ts.
 on:
   push:
-    branches: [main]
   pull_request:
-    branches: [main]
 
 permissions:
   contents: read
@@ -30,6 +42,33 @@ jobs:
       - name: Dependency audit (production tree)
         run: npm audit --omit=dev --audit-level=high
 
+  shell:
+    name: Lint container shell
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      # start-hermes.sh is ~950 lines of boot logic that nothing executed until
+      # 2026-08-25 and nothing parsed. A syntax error in a branch taken only on
+      # a cold boot would ship green.
+      - name: Parse every shell script
+        run: |
+          set -o pipefail
+          rc=0
+          for f in container/*.sh container/tests/*.sh scripts/*.sh; do
+            [ -e "$f" ] || continue
+            if bash -n "$f"; then echo "  ok   $f"; else echo "  FAIL $f"; rc=1; fi
+          done
+          exit $rc
+      - name: shellcheck
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          # Advisory for now: the script carries inline disable directives but
+          # has never been linted, so a first run will have a backlog. Failing
+          # on it today would just teach people to ignore this job — the exact
+          # failure mode that made ci-tooling-tests.yml background noise.
+          shellcheck -S error container/*.sh container/tests/*.sh || \
+            echo "::warning::shellcheck reported findings (advisory, not gating)"
+
   docker:
     name: Build container image
     runs-on: ubuntu-latest
@@ -47,6 +86,16 @@ jobs:
           tags: hermesworkers:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # ⚠️ THE ONLY CHECK THAT EXECUTES ANYTHING. Everything else in this repo
+      # asserts on start-hermes.sh's TEXT, which cannot see a version-dependent
+      # fact about the pinned Hermes binary — and both 2026-08-25 production
+      # outages were exactly that. See container/tests/config-contract.sh.
+      - name: Config contract (inside the built image)
+        run: |
+          docker run --rm --entrypoint bash \
+            -v "$PWD/container/tests:/tests:ro" \
+            hermesworkers:ci /tests/config-contract.sh
       - name: Smoke check
         run: |
           docker run --rm hermesworkers:ci /usr/local/bin/hermes --version
