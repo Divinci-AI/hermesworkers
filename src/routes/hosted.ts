@@ -166,10 +166,27 @@ hosted.post('/hosted/agent/stop', async (c) => {
  * whatever image it was created with — survives. So `stop` + `boot-check`
  * re-runs the OLD `/usr/local/bin/start-hermes.sh` from the OLD image.
  *
- * Env-var changes still apply on that path (they are injected at process
- * start by `ensureGateway`, never baked in), which is exactly what makes this
- * confusing: a `vars` change appears to prove the restart "worked", while an
- * IMAGE change made in the same deploy silently does not land.
+ * ⚠️ CORRECTED 2026-08-25 — THIS PARAGRAPH SAID THE OPPOSITE AND IT IS WRONG.
+ *
+ * It read: "Env-var changes still apply on that path (they are injected at
+ * process start by `ensureGateway`, never baked in)". MEASURED, and they do
+ * NOT. After a Worker secret was rewritten, a `stop`-restarted container wrote
+ * `.env` with 11 lines from the OLD value and kept 401ing; an EVICTed one wrote
+ * 5 lines and had the new one. `stop` kills the gateway PROCESS and reuses the
+ * container's cached environment — only `container.destroy()` re-reads Worker
+ * env.
+ *
+ * So: ANY Worker secret or var change needs an EVICT, not a stop.
+ *
+ * This cost real time on 2026-08-25. Both the "is the file that READS the var
+ * new?" heuristic and this docstring pointed at `stop`, and a stop was used to
+ * pick up a rewritten HERMES_DEFAULT_MODEL. It could not have worked, and
+ * nothing said so — the boot log looked normal because the model was coming
+ * from the per-agent pin file, not from the secret.
+ *
+ * The genuinely confusing part the original was reaching for is still true and
+ * still worth knowing: an IMAGE change made in the same deploy also does not
+ * land on a stop. The difference is that neither half does.
  *
  * Observed 2026-08-14: a deploy carrying a new Dockerfile layer and a modified
  * start-hermes.sh reported success, `wrangler` logged `SUCCESS Modified

@@ -191,6 +191,28 @@ fi
 # ANTHROPIC_API_KEY that such a Worker has no reason to hold — so the fallback
 # could only ever fail. `cfai/@cf/…` runs on Divinci's own Workers AI creds,
 # which is the same pair the cfai provider above is registered from.
+# ⚠️ THE FALLBACK LITERAL AND THE SECRET MUST NOT HOLD THE SAME VALUE.
+#
+# On 2026-08-25 HERMES_DEFAULT_MODEL was set to exactly this literal. That made
+# the boot log unable to distinguish three different states:
+#
+#   - the secret holds the intended value
+#   - the secret is EMPTY (see below) and this literal was used
+#   - the secret was never set at all
+#
+# All three print the same `model_requested=`. A default that duplicates the
+# configured value is a default you cannot tell fired.
+#
+# ⚠️ EMPTY IS A REAL STATE, NOT A HYPOTHETICAL. `wrangler secret put` run from a
+# NON-TTY reads its interactive prompt off empty stdin, stores "", and prints
+# `✨ Success! Uploaded secret …`. That happened to CLOUDFLARE_API_KEY the same
+# night. Always `printf '%s' "$VALUE" | wrangler secret put NAME`, and verify by
+# behaviour rather than by the success line.
+#
+# Keep this literal DIFFERENT from whatever the secret carries, so the boot log
+# discriminates. `:-` treats empty and unset identically, which is correct here
+# (an empty secret should fall through) but means the log line is the only place
+# the difference can ever show up.
 EFFECTIVE_MODEL="${AGENT_MODEL:-${HERMES_DEFAULT_MODEL:-cfai/@cf/deepseek-ai/deepseek-v4-flash-0731}}"
 # ⚠️ SET `model.default`, NOT BARE `model`, AND REPORT WHAT THE CONFIG HOLDS.
 #
