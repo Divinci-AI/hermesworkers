@@ -63,9 +63,28 @@ fail() {
 
 # ── 1. Workspace ───────────────────────────────────────────────────────────
 mkdir -p "$WORKSPACE"
-chown "${TERM_UID}:${TERM_UID}" "$WORKSPACE"
-chmod 0750 "$WORKSPACE"
-log "workspace ${WORKSPACE} owned by ${TERM_USER}"
+# Owner hermes-term (rwx), GROUP hermes (r-x), other nothing.
+#
+# The group is deliberately `hermes`, not `hermes-term`. The gateway runs as
+# hermes and is what performs vision_analyze and Slack MEDIA delivery, but it
+# is in no shared group with hermes-term — so with group hermes-term it could
+# not even TRAVERSE this directory, and every artifact the terminal produced
+# was unreachable to the half of Hermes that had to send it. On 2026-08-24 that
+# surfaced as `Permission denied: /workspace/*.png` on a screenshot the
+# terminal had just written, and MEDIA refusing /home/hermes as an unsafe path
+# — leaving nowhere that the terminal could write AND the gateway could read.
+#
+# This grants the MORE-privileged user read access to the LESS-privileged
+# user's workspace, which is the safe direction: it does not move hermes-term
+# any closer to /home/hermes/.hermes, asserted below and unchanged. `other`
+# stays empty, so nothing else on the box gains anything.
+#
+# setgid (2750) so files and subdirectories the terminal creates inherit group
+# hermes rather than hermes-term — without it only the top level is reachable
+# and anything written into a new subdirectory repeats the original bug.
+chown "${TERM_UID}:hermes" "$WORKSPACE"
+chmod 2750 "$WORKSPACE"
+log "workspace ${WORKSPACE} owned by ${TERM_USER}, group hermes (setgid, gateway-readable)"
 
 # Re-assert that the Hermes credential directory is unreadable by the terminal
 # user. The Dockerfile sets this up, but boot-time enforcement means a future
@@ -79,6 +98,25 @@ if gosu "$TERM_USER" test -r /home/hermes/.hermes/.env 2>/dev/null; then
   fail "terminal user can read /home/hermes/.hermes/.env — credential isolation is broken"
 fi
 log "credential isolation verified (${TERM_USER} cannot read ~hermes/.hermes/.env)"
+
+# Re-group anything already in the workspace. A container that predates the
+# group change carries files under hermes-term, and setgid only governs files
+# created from here on — without this the fix appears to work on a fresh
+# container and silently does nothing on an upgraded one.
+chgrp -R hermes "$WORKSPACE" 2>/dev/null || true
+
+# The other half of the boundary, asserted in the other direction: the gateway
+# MUST be able to read what the terminal writes, or image/file handoff to Slack
+# is impossible. This is the assertion that was missing on 2026-08-24 — nothing
+# checked it, so a directory the gateway could not traverse looked healthy.
+_probe="${WORKSPACE}/.gateway-read-probe"
+gosu "$TERM_USER" sh -c "umask 0027; printf ok > '$_probe'" 2>/dev/null || true
+if ! gosu hermes test -r "$_probe" 2>/dev/null; then
+  rm -f "$_probe" 2>/dev/null || true
+  fail "gateway user hermes cannot read ${WORKSPACE} — vision and MEDIA delivery would fail"
+fi
+rm -f "$_probe" 2>/dev/null || true
+log "gateway readability verified (hermes can read ${WORKSPACE})"
 
 # ── 2. Egress guard ────────────────────────────────────────────────────────
 [ -f "$GUARD" ] || fail "egress guard not found at ${GUARD}"

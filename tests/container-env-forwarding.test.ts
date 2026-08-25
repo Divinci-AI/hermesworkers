@@ -42,6 +42,12 @@ const NOT_FORWARDED: Record<string, string> = {
   // Script-local knobs with in-script defaults; nothing Worker-side sets them.
   HERMES_ENV_FILE: "script-local path, defaulted inside start-hermes.sh",
   HERMES_SHRED_ENV: "script-local flag, defaulted inside start-hermes.sh",
+  // Defaults to /workspace inside start-hermes.sh, which is the only directory
+  // the terminal can write and the gateway can read. Deliberately NOT
+  // Worker-settable: it is the allowlist of directories whose files may be
+  // delivered out to Slack, so a remotely-settable value would let a Worker
+  // var change widen what can leave the container.
+  HERMES_MEDIA_ALLOW_DIRS: "in-script default /workspace; not remotely settable by design",
 };
 
 const readByScript = [

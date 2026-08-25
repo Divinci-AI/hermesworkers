@@ -785,5 +785,23 @@ fi
 
 # Launch the gateway in the foreground as the unprivileged user. Its
 # stdout/stderr are tee'd to a log file the Worker can read.
+# MEDIA delivery allowlist. The gateway refuses to attach a model-emitted file
+# unless it sits under an allowed root (gateway/platforms/base.py,
+# _media_delivery_allowed_roots). /workspace is not a built-in root, so every
+# artifact the terminal produced was refused as an "unsafe MEDIA directive
+# path" — while the only directory the gateway COULD read, /home/hermes, was
+# refused for the same reason. That left no path from "the terminal made an
+# image" to "Slack received it". Pairs with the group/setgid change in
+# setup-terminal.sh: this makes /workspace ALLOWED, that makes it READABLE, and
+# the handoff needs both.
+export HERMES_MEDIA_ALLOW_DIRS="${HERMES_MEDIA_ALLOW_DIRS:-/workspace}"
+echo "[startup] media_allow_dirs=${HERMES_MEDIA_ALLOW_DIRS}" >> "$LOG_FILE"
+
+# Image marker. Bump on every container image change: an evict that did not
+# take cold-boots the OLD image while reporting success, and a changed startup
+# line is the only cheap way to tell the two apart. Grep for the NAME, not the
+# value — an absent line reads as a clean run.
+echo "[startup] image_marker=2026-08-24-terminal-breaker-and-workspace-group" >> "$LOG_FILE"
+
 echo "=== $(date -u) launching hermes gateway (user=${RUN_USER}) ===" >> "$LOG_FILE"
 exec gosu "${RUN_USER}" hermes gateway >> "$LOG_FILE" 2>&1

@@ -167,7 +167,20 @@ function textResult(result, extra) {
   // before truncation would inspect bytes that get thrown away and pass on the
   // ones that survive.
   const text = defangSteerMarkers(parts.join("\n"));
-  return { content: [{ type: "text", text }], isError: result.exitCode !== 0 };
+  // NOT isError. A nonzero exit is the command's verdict, not this server's:
+  // the exec itself succeeded and `[exit N]` above already carries the status.
+  //
+  // Hermes' MCP client treats any tool result carrying an "error" key as
+  // evidence the SERVER is sick (tools/mcp_tool.py: `if "error" in parsed:
+  // _bump_server_error(...)`), and opens a circuit breaker after 3 such
+  // results — disabling the terminal for 60s. For a shell, a nonzero exit is
+  // the single most common normal outcome, so flagging it here made the
+  // terminal disable itself during ordinary work: on 2026-08-24 a `mv` that
+  // reported "same file", an `ls` of a missing dir and a curl blocked by the
+  // egress allowlist were enough, and the agent told Slack the terminal was
+  // down. Reserve isError for failures of the TOOL — see the rejected-path
+  // and spawn-error paths, which still set it.
+  return { content: [{ type: "text", text }] };
 }
 
 const TOOLS = [
@@ -386,4 +399,4 @@ process.stdin.on("data", (chunk) => {
 });
 process.stdin.on("end", () => process.exit(0));
 
-module.exports = { resolveWorkspacePath, shellQuote, truncate, defangSteerMarkers, TOOLS, callTool };
+module.exports = { resolveWorkspacePath, shellQuote, truncate, defangSteerMarkers, textResult, TOOLS, callTool };
