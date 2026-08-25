@@ -139,6 +139,35 @@ export interface Env {
   /** Optional CF Access service-token pair if Access starts requiring it. */
   FULCRUM_CF_ACCESS_CLIENT_ID?: string;
   FULCRUM_CF_ACCESS_CLIENT_SECRET?: string;
+
+  // Buffer MCP (remote HTTP). Off unless "true". start-hermes.sh registers
+  // mcp_servers.buffer → https://mcp.buffer.com/mcp with Bearer MCP_BUFFER_API_KEY.
+  // Dogfood / Divinci-owned agents only — this is how changelog ideas get queued.
+  HERMES_BUFFER_MCP_ENABLED?: string;
+  /** Buffer Personal Access key. Prefer wrangler secret put MCP_BUFFER_API_KEY. */
+  MCP_BUFFER_API_KEY?: string;
+
+  // Canva MCP (remote HTTP). Off unless "true". start-hermes.sh registers
+  // mcp_servers.canva → https://mcp.canva.com/mcp with auth: oauth, seeding the
+  // token files from MCP_CANVA_OAUTH_JSON.
+  //
+  // ⚠️ Canva has NO static API key — the only credential is an OAuth grant, and
+  // its access token lives 4 hours. So the seed must carry a refresh_token and
+  // Hermes must own the refresh, which is why this ships token FILES rather
+  // than an Authorization header like Buffer's.
+  //
+  // ⚠️ The grant seeded here must be its OWN authorization, not a copy of the
+  // laptop's. Canva issues single-use refresh tokens: two holders of one grant
+  // race, and the loser gets invalid_grant with no way to re-consent from a
+  // headless container.
+  HERMES_CANVA_MCP_ENABLED?: string;
+  /**
+   * JSON: {"client_id": "...", "refresh_token": "...", "access_token": "...",
+   * "expires_at": <epoch seconds>}. Prefer wrangler secret put
+   * MCP_CANVA_OAUTH_JSON. access_token/expires_at are optional — Hermes
+   * refreshes from refresh_token on the first connect if they are absent.
+   */
+  MCP_CANVA_OAUTH_JSON?: string;
 }
 
 /**
@@ -258,6 +287,14 @@ export function collectProviderKeys(env: Env): Record<string, string> {
       keys.FULCRUM_CF_ACCESS_CLIENT_ID = env.FULCRUM_CF_ACCESS_CLIENT_ID;
       keys.FULCRUM_CF_ACCESS_CLIENT_SECRET = env.FULCRUM_CF_ACCESS_CLIENT_SECRET;
     }
+  }
+  if (env.HERMES_BUFFER_MCP_ENABLED === "true" || env.HERMES_BUFFER_MCP_ENABLED === "1") {
+    keys.HERMES_BUFFER_MCP_ENABLED = "true";
+    if (env.MCP_BUFFER_API_KEY) keys.MCP_BUFFER_API_KEY = env.MCP_BUFFER_API_KEY;
+  }
+  if (env.HERMES_CANVA_MCP_ENABLED === "true" || env.HERMES_CANVA_MCP_ENABLED === "1") {
+    keys.HERMES_CANVA_MCP_ENABLED = "true";
+    if (env.MCP_CANVA_OAUTH_JSON) keys.MCP_CANVA_OAUTH_JSON = env.MCP_CANVA_OAUTH_JSON;
   }
 
   return keys;

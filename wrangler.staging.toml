@@ -55,7 +55,7 @@ enabled = true
 # or path. Allowing a host allows POST to it as well as GET. Accepted here
 # because these are our own hosts and the terminal holds no credential to
 # authenticate with (uid 10002 cannot read ~/.hermes; verified in prod).
-EGRESS_ALLOWED_HOSTS = "github.com,codeload.github.com,objects.githubusercontent.com,raw.githubusercontent.com,gitlab.com,registry.npmjs.org,pypi.org,files.pythonhosted.org,crates.io,static.crates.io,proxy.golang.org,api.divinci.app,chat.divinci.app,embed.divinci.app,divinci-ai.workers.dev,pub-f4df7b63e90642deba26c7b9fd78ebb0.r2.dev,api.stage.divinci.app,chat.stage.divinci.app,embed.stage.divinci.app"
+EGRESS_ALLOWED_HOSTS = "github.com,codeload.github.com,objects.githubusercontent.com,raw.githubusercontent.com,gitlab.com,registry.npmjs.org,pypi.org,files.pythonhosted.org,crates.io,static.crates.io,proxy.golang.org,api.divinci.app,chat.divinci.app,embed.divinci.app,divinci-ai.workers.dev,pub-f4df7b63e90642deba26c7b9fd78ebb0.r2.dev,api.stage.divinci.app,chat.stage.divinci.app,embed.stage.divinci.app,mcp.buffer.com,mcp.canva.com,sdk.divinci.ai"
 # Opt-in whole-container egress widenings (see src/lib/terminal.ts). Binaries
 # (gws/gcloud/wrangler) are in the image regardless; these flags only open the
 # API hosts. Staging dogfood: both on.
@@ -69,6 +69,23 @@ HERMES_TERMINAL_ENABLED = "true"
 HERMES_APPROVALS_MODE = "off"
 HERMES_FULCRUM_MCP_ENABLED = "true"
 FULCRUM_MCP_URL = "https://fulcrum-acme.divinci.ai/mcp"
+# Buffer MCP — changelog idea queue. Token is a wrangler secret:
+#   printf '%s' "$MCP_BUFFER_API_KEY" | wrangler secret put MCP_BUFFER_API_KEY -c wrangler.staging.toml
+HERMES_BUFFER_MCP_ENABLED = "true"
+
+# Canva MCP. Divinci dogfood: lets the agent BUILD the outreach deck rather
+# than spec it. Canva has no static key, so the credential is an OAuth seed:
+#   printf '%s' "$MCP_CANVA_OAUTH_JSON" | wrangler secret put MCP_CANVA_OAUTH_JSON -c wrangler.staging.toml
+# where the JSON is {"client_id","refresh_token"[,"access_token","expires_at"]}.
+# The grant MUST be its own authorization, not a copy of a laptop's — Canva
+# refresh tokens are single-use, and a container cannot re-consent.
+#
+# OFF until MCP_CANVA_OAUTH_JSON is actually seeded. Flipping this to "true"
+# with no secret costs nothing but registers a server that can never hold a
+# tool, and start-hermes.sh then logs `seed=MISSING` on every boot — a standing
+# false alarm in the one log people grep when Canva goes quiet. Put the secret,
+# then flip this line.
+HERMES_CANVA_MCP_ENABLED = "false"
 # Drop the built-in toolsets that execute as the credential-owning uid.
 #
 # `read_file(path="~/.hermes/.env")` is a ONE-CALL credential read that passes

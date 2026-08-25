@@ -58,6 +58,40 @@ describe('collectProviderKeys — platform Vertex AI', () => {
   });
 });
 
+describe('collectProviderKeys — Buffer MCP', () => {
+  it('passes the Buffer flag and key only when enabled', () => {
+    const keys = collectProviderKeys(
+      env({ HERMES_BUFFER_MCP_ENABLED: 'true', MCP_BUFFER_API_KEY: 'buf-key' }),
+    );
+    expect(keys.HERMES_BUFFER_MCP_ENABLED).toBe('true');
+    expect(keys.MCP_BUFFER_API_KEY).toBe('buf-key');
+  });
+
+  it('does not leak the Buffer key when the flag is off', () => {
+    const keys = collectProviderKeys(env({ MCP_BUFFER_API_KEY: 'buf-key' }));
+    expect(keys.HERMES_BUFFER_MCP_ENABLED).toBeUndefined();
+    expect(keys.MCP_BUFFER_API_KEY).toBeUndefined();
+  });
+});
+
+describe('collectProviderKeys — Canva MCP', () => {
+  it('passes the Canva flag and OAuth seed only when enabled', () => {
+    const keys = collectProviderKeys(
+      env({ HERMES_CANVA_MCP_ENABLED: 'true', MCP_CANVA_OAUTH_JSON: '{"client_id":"c","refresh_token":"r"}' }),
+    );
+    expect(keys.HERMES_CANVA_MCP_ENABLED).toBe('true');
+    expect(keys.MCP_CANVA_OAUTH_JSON).toBe('{"client_id":"c","refresh_token":"r"}');
+  });
+
+  // The seed IS the credential — a refresh_token that reaches a container we
+  // did not mean to enable is a live Canva grant on someone else's disk.
+  it('does not leak the Canva OAuth seed when the flag is off', () => {
+    const keys = collectProviderKeys(env({ MCP_CANVA_OAUTH_JSON: '{"client_id":"c","refresh_token":"r"}' }));
+    expect(keys.HERMES_CANVA_MCP_ENABLED).toBeUndefined();
+    expect(keys.MCP_CANVA_OAUTH_JSON).toBeUndefined();
+  });
+});
+
 describe('providerKeysWithByok — customer key overlays platform', () => {
   it('overlays the BYOK key over the platform default for its provider', () => {
     const keys = providerKeysWithByok(
