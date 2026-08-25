@@ -37,17 +37,40 @@ const AUDIT_LOG = process.env.EGRESS_AUDIT_LOG || "/var/log/hermes-egress.log";
  * `github.com` matches `github.com` and `codeload.github.com`, but NOT
  * `evilgithub.com` or `github.com.attacker.net`. Anchoring on the dot is the
  * whole point — a naive `endsWith` is a bypass.
+ *
+ * An entry prefixed with `=` is EXACT-ONLY: `=divinci.ai` matches `divinci.ai`
+ * and NOTHING under it.
+ *
+ * ⚠️ WHY EXACT-ONLY EXISTS. The suffix form is right for a vendor domain whose
+ * every subdomain is equally public (github.com, npmjs.org). It is wrong for a
+ * domain we own, where subdomains are separate systems at different trust
+ * levels. `divinci.ai` as a SUFFIX would admit `fulcrum-acme.divinci.ai` — and
+ * this container materializes a Fulcrum API token, which per that integration's
+ * own note is code execution on the Fulcrum host. The terminal uid cannot read
+ * that token today, but the allowlist is the SECOND barrier, and granting the
+ * marketing site should not spend it. Reach for `=` whenever you are allowing a
+ * host on a domain we control.
  */
 function parseAllowlist(raw) {
-  return String(raw || "")
-    .split(",")
-    .map((h) => h.trim().toLowerCase())
-    .filter(Boolean)
+  const exact = new Set();
+  const suffix = [];
+  for (const item of String(raw || "").split(",")) {
+    let h = item.trim().toLowerCase();
+    if (!h) continue;
+    const exactOnly = h.startsWith("=");
+    if (exactOnly) h = h.slice(1).trim();
+    if (!h) continue;
     // Defensive: a wildcard entry would silently disable the guard.
-    .filter((h) => h !== "*" && !h.includes("*"));
+    if (h === "*" || h.includes("*")) continue;
+    if (exactOnly) exact.add(h.replace(/\.$/, ""));
+    else suffix.push(h);
+  }
+  return { exact, suffix };
 }
 
-const ALLOWED_HOSTS = parseAllowlist(process.env.EGRESS_ALLOWED_HOSTS);
+const ALLOWED = parseAllowlist(process.env.EGRESS_ALLOWED_HOSTS);
+/** Flat view, for logging and the empty-allowlist check only. */
+const ALLOWED_HOSTS = [...ALLOWED.exact].map((h) => `=${h}`).concat(ALLOWED.suffix);
 
 /** Ports the guard will connect to at all. 443/80 only — no SSH, no SMTP. */
 const ALLOWED_PORTS = new Set([80, 443]);
@@ -58,7 +81,10 @@ function isAllowedHost(hostname) {
   // An IP literal can never match a dot-anchored domain suffix, and allowing raw
   // IPs would let a caller skip DNS and reach anything. Reject explicitly.
   if (net.isIP(h)) return false;
-  return ALLOWED_HOSTS.some((allowed) => h === allowed || h.endsWith(`.${allowed}`));
+  // Exact entries first: they never widen, so an `=` entry can only ever
+  // ALLOW the one host it names.
+  if (ALLOWED.exact.has(h)) return true;
+  return ALLOWED.suffix.some((allowed) => h === allowed || h.endsWith(`.${allowed}`));
 }
 
 let auditStream = null;
@@ -194,10 +220,14 @@ if (ALLOWED_HOSTS.length === 0) {
   );
 }
 
-server.listen(PORT, BIND, () => {
+// Only listen when run as a program. Requiring this file (tests) must not bind
+// a port or leave a live handle behind.
+if (require.main === module) server.listen(PORT, BIND, () => {
   console.log(
     `[egress] guard listening on ${BIND}:${PORT}; allowlist=${
       ALLOWED_HOSTS.length ? ALLOWED_HOSTS.join(",") : "(empty — deny all)"
     }`,
   );
 });
+
+module.exports = { parseAllowlist, isAllowedHost };

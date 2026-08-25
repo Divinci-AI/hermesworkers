@@ -55,7 +55,7 @@ enabled = true
 # or path. Allowing a host allows POST to it as well as GET. Accepted here
 # because these are our own hosts and the terminal holds no credential to
 # authenticate with (uid 10002 cannot read ~/.hermes; verified in prod).
-EGRESS_ALLOWED_HOSTS = "github.com,codeload.github.com,objects.githubusercontent.com,raw.githubusercontent.com,gitlab.com,registry.npmjs.org,pypi.org,files.pythonhosted.org,crates.io,static.crates.io,proxy.golang.org,api.divinci.app,chat.divinci.app,embed.divinci.app,divinci-ai.workers.dev,pub-f4df7b63e90642deba26c7b9fd78ebb0.r2.dev,api.stage.divinci.app,chat.stage.divinci.app,embed.stage.divinci.app,mcp.buffer.com,mcp.canva.com,sdk.divinci.ai"
+EGRESS_ALLOWED_HOSTS = "github.com,codeload.github.com,objects.githubusercontent.com,raw.githubusercontent.com,gitlab.com,registry.npmjs.org,pypi.org,files.pythonhosted.org,crates.io,static.crates.io,proxy.golang.org,api.divinci.app,chat.divinci.app,embed.divinci.app,divinci-ai.workers.dev,pub-f4df7b63e90642deba26c7b9fd78ebb0.r2.dev,api.stage.divinci.app,chat.stage.divinci.app,embed.stage.divinci.app,mcp.buffer.com,mcp.canva.com,sdk.divinci.ai,=divinci.ai"
 # Opt-in whole-container egress widenings (see src/lib/terminal.ts). Binaries
 # (gws/gcloud/wrangler) are in the image regardless; these flags only open the
 # API hosts. Staging dogfood: both on.
