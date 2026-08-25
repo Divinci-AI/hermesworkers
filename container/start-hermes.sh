@@ -185,7 +185,13 @@ if [ -f "$AGENT_MODEL_ENV" ]; then
     # shellcheck disable=SC1090
     AGENT_MODEL="$(sed -n 's/^HERMES_AGENT_MODEL=//p' "$AGENT_MODEL_ENV" | head -n1)"
 fi
-EFFECTIVE_MODEL="${AGENT_MODEL:-${HERMES_DEFAULT_MODEL:-anthropic/claude-sonnet-4-5}}"
+# Last-resort default. Deliberately a PLATFORM (`cfai/`) id, not a BYOK one:
+# this fires when an agent has no per-agent pin AND the Worker sets no
+# HERMES_DEFAULT_MODEL, and `anthropic/claude-sonnet-4-5` needed an
+# ANTHROPIC_API_KEY that such a Worker has no reason to hold — so the fallback
+# could only ever fail. `cfai/@cf/…` runs on Divinci's own Workers AI creds,
+# which is the same pair the cfai provider above is registered from.
+EFFECTIVE_MODEL="${AGENT_MODEL:-${HERMES_DEFAULT_MODEL:-cfai/@cf/deepseek-ai/deepseek-v4-flash-0731}}"
 hermes config set model "$EFFECTIVE_MODEL" || true
 echo "[startup] model=$EFFECTIVE_MODEL (per-agent=${AGENT_MODEL:-none})" >> "$LOG_FILE"
 
@@ -736,6 +742,113 @@ if [ "${HERMES_BUFFER_MCP_ENABLED:-false}" = "true" ] || [ "${HERMES_BUFFER_MCP_
   fi
 else
   echo "[startup] buffer MCP NOT registered (HERMES_BUFFER_MCP_ENABLED!=true)" >> "$LOG_FILE"
+fi
+
+# ── Canva MCP (remote HTTP, OAuth) ─────────────────────────────────────────
+#
+# Divinci dogfood only. Gives the agent Canva's ~33 design tools so the
+# outreach deck for a prospect can be BUILT rather than specced. Gated off
+# unless HERMES_CANVA_MCP_ENABLED=true.
+#
+# ⚠️ Canva has NO static API key, so this cannot follow the Buffer shape (a
+# Bearer header out of .env). The only credential is an OAuth grant whose
+# access token lives 4 HOURS — an always-on agent must therefore hold the
+# refresh_token and let Hermes refresh on its own. We seed the token files and
+# register with `auth: oauth`; Hermes owns every refresh after that.
+#
+# ⚠️ The seeded grant must be its OWN authorization, not a copy of the laptop
+# gateway's. Canva issues single-use refresh tokens: two holders of one grant
+# race on refresh and the loser gets invalid_grant — with no browser in a
+# container, it can never re-consent, and the tools simply vanish.
+#
+# ⚠️ There is no interactive fallback here BY CONSTRUCTION. If the refresh is
+# ever rejected, Hermes parks the server and the failure is silent from the
+# outside (an agent with no Canva tools just stops mentioning Canva). The
+# startup line below is the only cheap signal that the seed landed; grep the
+# boot log for `canva MCP` whenever the deck builds go quiet.
+if [ "${HERMES_CANVA_MCP_ENABLED:-false}" = "true" ] || [ "${HERMES_CANVA_MCP_ENABLED:-}" = "1" ]; then
+  CANVA_URL="https://mcp.canva.com/mcp"
+  CANVA_SEEDED="no"
+  if [ -n "${MCP_CANVA_OAUTH_JSON:-}" ]; then
+    # The secret reaches python through the ENVIRONMENT, never argv: argv is
+    # world-readable via `ps`, and this value is a refresh_token.
+    #
+    # ⚠️ It cannot come over stdin either, however obvious that looks: the
+    # script itself is fed to `python -` by the heredoc below, so a
+    # `printf … | python - <<EOF` reads the HEREDOC on stdin and the piped JSON
+    # is silently discarded. That wrote no files at all and still logged a
+    # tidy-looking seed=MISSING line.
+    if /opt/hermes-venv/bin/python - \
+         "$HOME_DIR/.hermes/mcp-tokens" >> "$LOG_FILE" 2>&1 <<'CANVAEOF'
+import json, os, sys, time
+
+token_dir = sys.argv[1]
+seed = json.loads(os.environ["MCP_CANVA_OAUTH_JSON"])
+
+client_id = seed.get("client_id")
+refresh_token = seed.get("refresh_token")
+if not client_id or not refresh_token:
+    # Fail loudly rather than writing a file that looks seeded and is not:
+    # a token file missing refresh_token dies four hours later, long after
+    # anyone is still looking at this boot.
+    raise SystemExit("MCP_CANVA_OAUTH_JSON needs client_id and refresh_token")
+
+os.makedirs(token_dir, mode=0o700, exist_ok=True)
+
+tokens = {
+    "access_token": seed.get("access_token", ""),
+    "token_type": seed.get("token_type", "Bearer"),
+    "refresh_token": refresh_token,
+    # Default to already-expired so the first connect refreshes instead of
+    # presenting a stale access_token and reading the 401 as a dead grant.
+    "expires_at": float(seed.get("expires_at", 0)),
+}
+if seed.get("scope"):
+    tokens["scope"] = seed["scope"]
+if seed.get("expires_in"):
+    tokens["expires_in"] = seed["expires_in"]
+
+client = {
+    "client_id": client_id,
+    "redirect_uris": seed.get("redirect_uris", ["http://127.0.0.1:37949/callback"]),
+    "token_endpoint_auth_method": seed.get("token_endpoint_auth_method", "none"),
+    "grant_types": ["authorization_code", "refresh_token"],
+    "response_types": ["code"],
+    "client_name": seed.get("client_name", "Hermes Agent"),
+}
+if seed.get("client_secret"):
+    client["client_secret"] = seed["client_secret"]
+
+for name, payload in (("canva.json", tokens), ("canva.client.json", client)):
+    path = os.path.join(token_dir, name)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as fh:
+        json.dump(payload, fh)
+
+age = "expired" if tokens["expires_at"] <= time.time() else "live"
+print(f"[startup] canva OAuth seed written (client_id set, access_token {age})")
+CANVAEOF
+    then
+      CANVA_SEEDED="yes"
+      chmod 700 "$HOME_DIR/.hermes/mcp-tokens" 2>/dev/null || true
+    fi
+  fi
+  hermes config set mcp_servers.canva.url "${CANVA_URL}" >> "$LOG_FILE" 2>&1 || true
+  hermes config set mcp_servers.canva.enabled true >> "$LOG_FILE" 2>&1 || true
+  hermes config set mcp_servers.canva.auth oauth >> "$LOG_FILE" 2>&1 || true
+  hermes config set mcp_servers.canva.timeout 120 >> "$LOG_FILE" 2>&1 || true
+  # 60s, not Buffer's 30: Canva's handshake lists 33 tools and can fold a token
+  # refresh into the same connect. A laptop gateway measured 0.6s warm and 6.5s
+  # cold, and 30s upstream timeouts were what wedged it on 2026-08-24.
+  hermes config set mcp_servers.canva.connect_timeout 60 >> "$LOG_FILE" 2>&1 || true
+  hermes config set mcp_servers.canva.skip_preflight true >> "$LOG_FILE" 2>&1 || true
+  if [ "$CANVA_SEEDED" = "yes" ]; then
+    echo "[startup] registered canva MCP -> ${CANVA_URL} (oauth seed=OK)" >> "$LOG_FILE"
+  else
+    echo "[startup] registered canva MCP -> ${CANVA_URL} (oauth seed=MISSING — no browser in here, so the tools will NOT appear)" >> "$LOG_FILE"
+  fi
+else
+  echo "[startup] canva MCP NOT registered (HERMES_CANVA_MCP_ENABLED!=true)" >> "$LOG_FILE"
 fi
 
 # Optional defense in depth: drop the .env after the gateway is up, so even a
