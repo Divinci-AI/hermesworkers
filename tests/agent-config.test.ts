@@ -46,7 +46,25 @@ describe('buildAgentConfigShell', () => {
   it('writes a durable model pin AND applies it live', () => {
     const sh = buildAgentConfigShell({ model: 'gemini-2.5-flash' });
     expect(sh).toContain(AGENT_MODEL_ENV_ABSOLUTE);
-    expect(sh).toContain("hermes config set model.default 'gemini-2.5-flash'");
+    expect(sh).toContain('hermes config set model.default "$MODEL_LEAF"');
+  });
+
+  // gap: the config route is start-hermes.sh's TWIN and was fixed twice behind
+  // it. On 2026-08-25 it wrote the PREFIXED id into model.default and never set
+  // model.provider, so restoring a pin after an evict produced a config the
+  // gateway could not route — `AiError: No such model: cfai/@cf/…` — and took
+  // two of three production agents down while "restoring" them.
+  it('splits the provider out, like the boot script does', () => {
+    const sh = buildAgentConfigShell({ model: 'cfai/@cf/deepseek-ai/deepseek-v4-pro-0813' });
+    expect(sh).toContain('MODEL_PROVIDER="${MODEL_ID%%/*}"');
+    expect(sh).toContain('hermes config set model.provider "$MODEL_PROVIDER"');
+    // never the prefixed id straight into default
+    expect(sh).not.toContain("model.default 'cfai/@cf/deepseek-ai/deepseek-v4-pro-0813'");
+  });
+
+  it('guards the no-slash case so a bare id is not mangled', () => {
+    const sh = buildAgentConfigShell({ model: 'gemini-2.5-flash' });
+    expect(sh).toContain('MODEL_PROVIDER=""; MODEL_LEAF="$MODEL_ID"');
   });
 
   // gap: hermes-config-set-model-failure-is-swallowed-and-then-misreported
@@ -68,8 +86,11 @@ describe('buildAgentConfigShell', () => {
   // restates its own input cannot detect this class of failure.
   it('reports what the config HOLDS, not what was requested', () => {
     const sh = buildAgentConfigShell({ model: 'gemini-2.5-flash' });
-    expect(sh).toContain('hermes config get model');
     expect(sh).toContain('model_stored=');
+    // ⚠️ `hermes config get` does not exist on the pinned CLI; this line
+    // logged argparse usage text as the value until 2026-08-25.
+    expect(sh).not.toContain('hermes config get');
+    expect(sh).toContain('.hermes/config.yaml');
     // Scoped to the model line on purpose: the trailing `chown … || true` is
     // legitimately best-effort, and asserting over the whole script would
     // couple this test to that unrelated line.

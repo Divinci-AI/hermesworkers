@@ -143,9 +143,47 @@ export function buildAgentConfigShell(body: AgentConfigBody): string {
       // therefore could not distinguish "stored" from "rejected". It now
       // reports what the config actually HOLDS.
       // gap: hermes-config-set-model-failure-is-swallowed-and-then-misreported
-      `hermes config set model.default ${shellSingleQuote(body.model)} || echo "model_set_failed=1"`,
+      // ⚠️ SPLIT THE PROVIDER, EXACTLY AS start-hermes.sh DOES.
+      //
+      // Writing the PREFIXED id into `model.default` and leaving
+      // `model.provider` alone produces a config the gateway cannot route.
+      // Measured in production 2026-08-25: every turn returned
+      // `AiError: No such model: No such model cfai/@cf/deepseek-ai/…`,
+      // because the prefixed string reaches the cfai endpoint verbatim.
+      //
+      // This route restores a per-agent pin after an evict — and an evict is
+      // now required for ANY Worker secret change — so it runs on exactly the
+      // path where a fleet is being brought back up. It took two of three
+      // agents down while "restoring" them.
+      //
+      // ⚠️ THIS FILE AND container/start-hermes.sh BUILD THE SAME CONFIG FROM
+      // THE SAME INPUT. The boot script was fixed in 25a8872 and this twin was
+      // not; the read-back was fixed in 841f28a and this twin was not. Both
+      // times a fix to one was taken for a fix to both. Change either, change
+      // the other.
+      `MODEL_ID=${shellSingleQuote(body.model)}`,
+      // `%%/*` and `#*/` both return the whole string when there is no slash,
+      // so an unguarded split sets provider and model to the same value.
+      'if [ "$MODEL_ID" != "${MODEL_ID#*/}" ]; then',
+      '  MODEL_PROVIDER="${MODEL_ID%%/*}"; MODEL_LEAF="${MODEL_ID#*/}"',
+      'else',
+      '  MODEL_PROVIDER=""; MODEL_LEAF="$MODEL_ID"',
+      'fi',
+      'hermes config set model.default "$MODEL_LEAF" || echo "model_set_failed=1"',
+      'if [ -n "$MODEL_PROVIDER" ]; then',
+      '  hermes config set model.provider "$MODEL_PROVIDER" || echo "model_provider_set_failed=1"',
+      'fi',
       `echo "model_requested=${body.model}"`,
-      `echo "model_stored=$(hermes config get model 2>&1 | tr '\n' ' ')"`,
+      // ⚠️ READ THE FILE, NOT THE CLI. `hermes config get` DOES NOT EXIST on
+      // the pinned CLI (v0.18.2 / 2026.7.7.2) — its verbs are {show,edit,set,
+      // path,env-path,check,migrate}. This line logged argparse's usage text as
+      // the stored value for its whole life. `sed` rather than the venv python
+      // used in start-hermes.sh: this string is assembled in TypeScript and
+      // then shell-quoted, and an embedded python program here needs three
+      // levels of escaping to say something two lines of sed say plainly.
+      `echo "model_stored=$(sed -n '/^model:/,/^[^[:space:]]/p' `
+        + `${shellSingleQuote(`${home}/.hermes/config.yaml`)} `
+        + `| grep -E '^[[:space:]]+(default|provider):' | tr -d ' ' | tr '\n' ' ')"`,
     );
   }
 
