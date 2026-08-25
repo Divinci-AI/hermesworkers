@@ -346,6 +346,11 @@ describe('deployed egress allowlists', () => {
         expect(hosts).toContain('api.divinci.app');
       });
 
+      it('lets changelog duty reach Buffer MCP and the docs site', () => {
+        expect(hosts).toContain('mcp.buffer.com');
+        expect(hosts).toContain('sdk.divinci.ai');
+      });
+
       it('covers every demo worker via the account subdomain', () => {
         // Suffix match — only our own account can deploy to it.
         expect(hosts).toContain('divinci-ai.workers.dev');
