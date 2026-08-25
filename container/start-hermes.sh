@@ -259,7 +259,39 @@ if [ -n "$MODEL_PROVIDER" ]; then
   fi
 fi
 echo "[startup] model_requested=$EFFECTIVE_MODEL (per-agent=${AGENT_MODEL:-none})" >> "$LOG_FILE"
-echo "[startup] model_stored=$(hermes config get model 2>&1 | tr '\n' ' ')" >> "$LOG_FILE"
+# ⚠️ READ THE FILE, NOT THE CLI. `hermes config get` DOES NOT EXIST HERE.
+#
+# The first version of this line used `hermes config get model`, verified on a
+# laptop running v0.20.0. The PINNED container CLI (v2026.7.7.2) has no `get`
+# subcommand at all — its config verbs are {show,edit,set,path,env-path,check,
+# migrate} — so the line captured argparse's usage error and logged it AS THE
+# VALUE:
+#
+#   [startup] model_stored=usage: hermes config [-h] {show,edit,set,path,…}
+#             hermes config: error: argument config_command: invali…
+#
+# That is the same mistake this whole block exists to fix, made one layer up:
+# a check verified against the WRONG VERSION of the thing it checks, reporting
+# confidently either way. `config show` is no better — it renders a panel, not
+# a greppable value.
+#
+# So read config.yaml directly. It is the file the gateway actually loads,
+# it needs no CLI subcommand to exist, and it cannot drift with the pin.
+# Failure prints the exception rather than an empty value, because "" here
+# would read as "nothing is set" — a wrong answer wearing the right shape.
+echo "[startup] model_stored=$(/opt/hermes-venv/bin/python - "$HOME_DIR/.hermes/config.yaml" <<'MSEOF' 2>&1 | tr '\n' ' '
+import sys, yaml
+try:
+    cfg = yaml.safe_load(open(sys.argv[1])) or {}
+    m = cfg.get("model")
+    if not isinstance(m, dict):
+        print(f"UNEXPECTED model is {type(m).__name__}: {m!r}")
+    else:
+        print(f"default={m.get('default')!r} provider={m.get('provider')!r}")
+except Exception as exc:
+    print(f"UNREADABLE {type(exc).__name__}: {exc}")
+MSEOF
+)" >> "$LOG_FILE"
 
 # Per-agent identity. Hermes loads SOUL.md from HERMES_HOME as slot #1 of the
 # system prompt, replacing its built-in identity — so this is what makes an

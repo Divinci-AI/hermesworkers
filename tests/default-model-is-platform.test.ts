@@ -86,9 +86,24 @@ describe("container last-resort default model", () => {
     expect(SCRIPT).toContain('MODEL_PROVIDER=""');
   });
 
+  // ⚠️ `hermes config get` DOES NOT EXIST on the pinned CLI (v2026.7.7.2) —
+  // its config verbs are {show,edit,set,path,env-path,check,migrate}. The first
+  // version of the read-back used it, verified on a laptop's v0.20.0, and in
+  // production it logged argparse's usage error AS THE VALUE. A check verified
+  // against the wrong version of the thing it checks reports confidently either
+  // way — the same failure this file exists to prevent, one layer up.
+  it('reads config.yaml directly, never through a CLI subcommand', () => {
+    const code = SCRIPT.split('\n').filter((l) => !l.trim().startsWith('#'));
+    for (const l of code) {
+      expect(l).not.toContain('hermes config get');
+      expect(l).not.toContain('hermes config show');
+    }
+    expect(SCRIPT).toContain('.hermes/config.yaml');
+  });
+
   // Neither set may be swallowed, and the log must report the STORED value.
   it('never swallows a failed set, and reports what the config holds', () => {
-    expect(SCRIPT).toContain('hermes config get model');
+    expect(SCRIPT).toContain('model_stored=');
     expect(SCRIPT).toContain('model_stored=');
     const setLines = SCRIPT.split('\n').filter((l) => l.includes('hermes config set model'));
     expect(setLines.length).toBeGreaterThanOrEqual(2);
