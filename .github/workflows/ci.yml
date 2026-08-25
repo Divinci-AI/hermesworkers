@@ -103,6 +103,23 @@ jobs:
           docker run --rm --entrypoint bash \
             -v "$PWD/container/tests:/tests:ro" \
             hermesworkers:ci /tests/config-contract.sh
+
+      # Second executing check, same reasoning as the one above: the defect is
+      # in the PINNED hermes-agent source, so only running it can see it.
+      #
+      # It also proves container/patches/*.patch is actually IN the image. A
+      # patch that stopped applying would leave every static check green while
+      # shipping the old behaviour — and the old behaviour is an error reporter
+      # that replaces the error it reports, which is the most expensive thing
+      # to ship silently.
+      #
+      # `timeout` for the same reason as the smoke check: a future entrypoint
+      # change must fail loudly rather than hang for six hours.
+      - name: Error-summariser contract (inside the built image)
+        run: |
+          timeout 300 docker run --rm --entrypoint bash \
+            -v "$PWD/container/tests:/tests:ro" \
+            hermesworkers:ci /tests/error-summariser-contract.sh
       # ⚠️ `--entrypoint` IS LOAD-BEARING. WITHOUT IT THIS STEP HANGS FOREVER.
       #
       # The base image (cloudflare/sandbox) sets ENTRYPOINT

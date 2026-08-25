@@ -163,9 +163,13 @@ RUN mkdir -p /home/hermes
 # Install Hermes from source, pinned for reproducibility.
 # Pinned to NousResearch/hermes-agent v2026.7.7.2 (has `hermes gateway`,
 # `hermes dashboard`, and the API server). HERMES_COMMIT defaults to that tag's
-# immutable commit SHA for supply-chain safety (git tags are mutable; a moved
-# tag would silently change what you ship). The clone FAILS HARD on a bad tag —
-# no silent fallback to an unpinned default branch. Override both to bump.
+# immutable ANNOTATED TAG OBJECT sha for supply-chain safety (git tags are
+# mutable; a moved tag would silently change what you ship — but a tag object's
+# sha is content-addressed over the commit it names, so moving the tag yields a
+# DIFFERENT sha and the fetch fails). git prints `is not a commit!` and then
+# resolves it to commit 9de9c25f; that warning is expected, not a defect. The
+# clone FAILS HARD on a bad tag — no silent fallback to an unpinned default
+# branch. Override both to bump.
 ENV HERMES_VERSION=v2026.7.7.2
 ARG HERMES_COMMIT="b7751df34688835a108e0d630f3495fc11f3df79"
 WORKDIR /opt
@@ -175,6 +179,27 @@ RUN git clone --depth 1 --branch "${HERMES_VERSION}" https://github.com/NousRese
          && git fetch --depth 1 origin "${HERMES_COMMIT}" \
          && git checkout --detach "${HERMES_COMMIT}"; \
        fi
+
+# ── Local patches against the pinned upstream ──────────────────────────────
+# Applied BEFORE the editable install, so the venv imports patched source.
+#
+# ⚠️ A FAILED PATCH MUST FAIL THE BUILD. `git apply` is deliberately not
+# `|| true`: a patch that stops applying after a HERMES_COMMIT bump means the
+# defect it fixes is either back or restructured, and both need a human. A
+# silently-skipped patch would ship the old behaviour under a version string
+# that claims otherwise — the exact "a success line is not an outcome" trap
+# that cost the 2026-08-25 night shift.
+#
+# 0001: `_summarize_api_error` crashes on an unread streaming response, so the
+#       error REPORTER replaces the error it reports. See the patch header.
+COPY patches/ /opt/hermes-patches/
+WORKDIR /opt/hermes-agent
+RUN set -eu; \
+    for p in /opt/hermes-patches/*.patch; do \
+      echo "applying $(basename "$p")"; \
+      git apply --verbose "$p"; \
+    done; \
+    python3.11 -c "import ast,sys; ast.parse(open('/opt/hermes-agent/run_agent.py').read())"
 
 WORKDIR /opt/hermes-agent
 RUN python3.11 -m venv /opt/hermes-venv \

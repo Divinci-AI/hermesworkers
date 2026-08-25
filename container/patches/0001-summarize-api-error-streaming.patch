@@ -1,0 +1,62 @@
+diff --git a/run_agent.py b/run_agent.py
+index 3be621f..c634ec9 100644
+--- a/run_agent.py
++++ b/run_agent.py
+@@ -2094,6 +2094,48 @@ class AIAgent:
+             return ""
+         return str(value)
+ 
++    @staticmethod
++    def _safe_response_text(response: Any) -> str:
++        """Return an error response's body text, or "" — but never raise.
++
++        THIS FUNCTION EXISTS TO STOP THE ERROR REPORTER FROM REPLACING THE
++        ERROR IT IS REPORTING.
++
++        ``.text`` on an httpx response whose stream has not been read raises
++        ``httpx.ResponseNotRead``. That is a ``RuntimeError``, NOT an
++        ``AttributeError``, so the ``getattr(response, "text", None)`` this
++        replaced did not absorb it: the exception escaped
++        ``_summarize_api_error`` and became the error the caller saw, in place
++        of the real upstream failure.
++
++        Observed in production 2026-08-25: every turn returned ``HTTP 500:
++        Attempted to access streaming response content, without having called
++        `read()```, while the actual failure — a provider 404 — appeared only
++        in the gateway log under "During handling of the above exception". The
++        mask names httpx, so it reads as a transport bug in our own client and
++        sends diagnosis to the wrong layer; two model-swap experiments returned
++        byte-identical errors, because the masking is invariant to whatever
++        actually failed.
++
++        A streaming body is read here when it can be, because that body is
++        usually the only place the provider's real message appears. If reading
++        fails for any reason we return "" and let the caller fall through to
++        its ``str(error)`` fallback — a less specific summary is always better
++        than a summary of this function's own failure.
++        """
++        try:
++            return (getattr(response, "text", None) or "").strip()
++        except Exception:
++            pass
++        reader = getattr(response, "read", None)
++        if callable(reader):
++            try:
++                reader()
++                return (getattr(response, "text", None) or "").strip()
++            except Exception:
++                return ""
++        return ""
++
+     @staticmethod
+     def _summarize_api_error(error: Exception) -> str:
+         """Extract a human-readable one-liner from an API error.
+@@ -2143,7 +2185,7 @@ class AIAgent:
+         # widens exposure vs the old empty-body "HTTP 400" string).
+         response = getattr(error, "response", None)
+         if response is not None:
+-            snippet = (getattr(response, "text", None) or "").strip()
++            snippet = AIAgent._safe_response_text(response)
+             if snippet:
+                 status_code = getattr(error, "status_code", None)
+                 prefix = f"HTTP {status_code}: " if status_code else ""
