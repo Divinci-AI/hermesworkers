@@ -192,8 +192,35 @@ fi
 # could only ever fail. `cfai/@cf/…` runs on Divinci's own Workers AI creds,
 # which is the same pair the cfai provider above is registered from.
 EFFECTIVE_MODEL="${AGENT_MODEL:-${HERMES_DEFAULT_MODEL:-cfai/@cf/deepseek-ai/deepseek-v4-flash-0731}}"
-hermes config set model "$EFFECTIVE_MODEL" || true
-echo "[startup] model=$EFFECTIVE_MODEL (per-agent=${AGENT_MODEL:-none})" >> "$LOG_FILE"
+# ⚠️ SET `model.default`, NOT BARE `model`, AND REPORT WHAT THE CONFIG HOLDS.
+#
+# `model` is a MAPPING in config.yaml (`default` / `provider` / `base_url`), so
+# `hermes config set model "<id>"` writes a scalar over a mapping. Newer CLIs
+# (v0.20.0 / 2026.8.3) silently repair that — "Redirecting bare 'model' to
+# 'model.default'" — but the pinned container CLI (HERMES_VERSION=v2026.7.7.2)
+# does NOT, and rejects it.
+#
+# That rejection was invisible twice over: `|| true` swallowed the exit code,
+# and the `echo` below printed $EFFECTIVE_MODEL whether or not it was stored.
+# So on 2026-08-25 the boot log asserted
+# `model=cfai/@cf/deepseek-ai/deepseek-v4-pro-0813` while config.yaml still held
+# a Gemini model, every turn routed through gemini_native_adapter, and Gemini
+# answered 404 — surfacing as an httpx `ResponseNotRead` because the error
+# summariser crashes reading `.text` on a streaming response.
+#
+# The tell was ABSENCE: `hermes config set` prints `✓ Set <key> = <value>` on
+# success, and the two `providers.cfai.*` sets immediately above printed theirs
+# while `model` printed nothing.
+#
+# So: no `|| true`, and the log line reports `hermes config get model` — the
+# stored value — rather than echoing this script's own input. A log line that
+# restates its input cannot detect this class of failure, which is exactly how
+# it survived.
+if ! hermes config set model.default "$EFFECTIVE_MODEL" >> "$LOG_FILE" 2>&1; then
+  echo "[startup] ⚠️ FAILED to set model.default=$EFFECTIVE_MODEL — the turn model is NOT what this boot intended" >> "$LOG_FILE"
+fi
+echo "[startup] model_requested=$EFFECTIVE_MODEL (per-agent=${AGENT_MODEL:-none})" >> "$LOG_FILE"
+echo "[startup] model_stored=$(hermes config get model 2>&1 | tr '\n' ' ')" >> "$LOG_FILE"
 
 # Per-agent identity. Hermes loads SOUL.md from HERMES_HOME as slot #1 of the
 # system prompt, replacing its built-in identity — so this is what makes an

@@ -130,8 +130,22 @@ export function buildAgentConfigShell(body: AgentConfigBody): string {
       `printf 'HERMES_AGENT_MODEL=%s\\n' ${shellSingleQuote(body.model)} > ${shellSingleQuote(AGENT_MODEL_ENV_ABSOLUTE)}`,
       `chmod 600 ${shellSingleQuote(AGENT_MODEL_ENV_ABSOLUTE)}`,
       // Apply immediately too, so a running gateway picks it up without a boot.
-      `hermes config set model ${shellSingleQuote(body.model)} 2>/dev/null || true`,
-      `echo "model_set=${body.model}"`,
+      //
+      // ⚠️ `model.default`, NOT bare `model`. `model` is a MAPPING in
+      // config.yaml (default / provider / base_url); writing a scalar over it
+      // is rejected by the pinned container CLI (v2026.7.7.2). Newer CLIs
+      // repair it silently, which is why this looked correct everywhere it was
+      // tested by hand.
+      //
+      // ⚠️ And the failure was reported as a success TWICE — `2>/dev/null`
+      // discarded the reason and `|| true` discarded the exit code, then
+      // `model_set=` echoed the requested value regardless. The caller
+      // therefore could not distinguish "stored" from "rejected". It now
+      // reports what the config actually HOLDS.
+      // gap: hermes-config-set-model-failure-is-swallowed-and-then-misreported
+      `hermes config set model.default ${shellSingleQuote(body.model)} || echo "model_set_failed=1"`,
+      `echo "model_requested=${body.model}"`,
+      `echo "model_stored=$(hermes config get model 2>&1 | tr '\n' ' ')"`,
     );
   }
 

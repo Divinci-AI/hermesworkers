@@ -46,7 +46,36 @@ describe('buildAgentConfigShell', () => {
   it('writes a durable model pin AND applies it live', () => {
     const sh = buildAgentConfigShell({ model: 'gemini-2.5-flash' });
     expect(sh).toContain(AGENT_MODEL_ENV_ABSOLUTE);
-    expect(sh).toContain("hermes config set model 'gemini-2.5-flash'");
+    expect(sh).toContain("hermes config set model.default 'gemini-2.5-flash'");
+  });
+
+  // gap: hermes-config-set-model-failure-is-swallowed-and-then-misreported
+  //
+  // `model` is a MAPPING in config.yaml (default / provider / base_url).
+  // Writing a scalar over it is rejected by the PINNED container CLI
+  // (HERMES_VERSION=v2026.7.7.2); newer CLIs silently redirect bare `model` to
+  // `model.default`, which is why this read as correct in every by-hand test
+  // and failed only in production.
+  it('sets model.default, never bare model', () => {
+    const sh = buildAgentConfigShell({ model: 'gemini-2.5-flash' });
+    expect(sh).not.toMatch(/hermes config set model\s+'/);
+  });
+
+  // The rejection was invisible twice over, and the second half is the one
+  // that mattered: `2>/dev/null` dropped the reason, `|| true` dropped the
+  // exit code, and `model_set=` then echoed the REQUESTED value regardless —
+  // so the caller could not tell "stored" from "rejected". A report that
+  // restates its own input cannot detect this class of failure.
+  it('reports what the config HOLDS, not what was requested', () => {
+    const sh = buildAgentConfigShell({ model: 'gemini-2.5-flash' });
+    expect(sh).toContain('hermes config get model');
+    expect(sh).toContain('model_stored=');
+    // Scoped to the model line on purpose: the trailing `chown … || true` is
+    // legitimately best-effort, and asserting over the whole script would
+    // couple this test to that unrelated line.
+    const modelLine = sh.split('\n').find((l) => l.includes('hermes config set model'))!;
+    expect(modelLine).not.toContain('2>/dev/null');
+    expect(modelLine).not.toContain('|| true');
   });
 
   it('always hands ownership back to the hermes uid', () => {
