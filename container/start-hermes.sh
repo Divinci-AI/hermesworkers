@@ -216,8 +216,47 @@ EFFECTIVE_MODEL="${AGENT_MODEL:-${HERMES_DEFAULT_MODEL:-cfai/@cf/deepseek-ai/dee
 # stored value — rather than echoing this script's own input. A log line that
 # restates its input cannot detect this class of failure, which is exactly how
 # it survived.
-if ! hermes config set model.default "$EFFECTIVE_MODEL" >> "$LOG_FILE" 2>&1; then
-  echo "[startup] ⚠️ FAILED to set model.default=$EFFECTIVE_MODEL — the turn model is NOT what this boot intended" >> "$LOG_FILE"
+# ⚠️ SPLIT THE PROVIDER OUT — `model.default` ALONE IS NOT ENOUGH.
+#
+# `model` has THREE leaves: default / provider / base_url. Setting only
+# `model.default` to a provider-prefixed id (`cfai/@cf/deepseek-ai/…`) leaves no
+# provider anywhere in the mapping and rests entirely on the CLI splitting on
+# the first slash — which nothing has ever verified on the PINNED CLI.
+#
+# The one configuration measured serving a real turn (Hermes Local, 2026-08-25)
+# is the split form:
+#
+#     model:
+#       default:  '@cf/deepseek-ai/deepseek-v4-flash-0731'   # BARE
+#       provider: cfai
+#       base_url: https://api.cloudflare.com/…/ai/v1
+#
+# base_url is already covered by the providers.cfai registration above.
+#
+# ⚠️ VERIFIED ON v0.20.0 (2026.8.3), NOT ON THE PINNED v2026.7.7.2. The SHAPE is
+# what was confirmed, by setting all three leaves explicitly — not the newer
+# CLI's bare-`model` redirect. `model_stored=` below is what tells us whether
+# the pinned CLI accepts `model.provider` at all; do not assume it from this
+# comment.
+#
+# The no-slash case is guarded so a bare id (`gemini-2.5-flash`) is not mangled
+# into an empty provider — `${x%%/*}` and `${x#*/}` both return the whole string
+# when there is no slash, which would set provider and model to the same value.
+if [ "$EFFECTIVE_MODEL" != "${EFFECTIVE_MODEL#*/}" ]; then
+  MODEL_PROVIDER="${EFFECTIVE_MODEL%%/*}"
+  MODEL_ID="${EFFECTIVE_MODEL#*/}"
+else
+  MODEL_PROVIDER=""
+  MODEL_ID="$EFFECTIVE_MODEL"
+fi
+
+if ! hermes config set model.default "$MODEL_ID" >> "$LOG_FILE" 2>&1; then
+  echo "[startup] ⚠️ FAILED to set model.default=$MODEL_ID — the turn model is NOT what this boot intended" >> "$LOG_FILE"
+fi
+if [ -n "$MODEL_PROVIDER" ]; then
+  if ! hermes config set model.provider "$MODEL_PROVIDER" >> "$LOG_FILE" 2>&1; then
+    echo "[startup] ⚠️ FAILED to set model.provider=$MODEL_PROVIDER — the turn model is NOT what this boot intended" >> "$LOG_FILE"
+  fi
 fi
 echo "[startup] model_requested=$EFFECTIVE_MODEL (per-agent=${AGENT_MODEL:-none})" >> "$LOG_FILE"
 echo "[startup] model_stored=$(hermes config get model 2>&1 | tr '\n' ' ')" >> "$LOG_FILE"
