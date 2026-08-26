@@ -1053,11 +1053,21 @@ fi
 export HERMES_MEDIA_ALLOW_DIRS="${HERMES_MEDIA_ALLOW_DIRS:-/workspace}"
 echo "[startup] media_allow_dirs=${HERMES_MEDIA_ALLOW_DIRS}" >> "$LOG_FILE"
 
-# Image marker. Bump on every container image change: an evict that did not
-# take cold-boots the OLD image while reporting success, and a changed startup
-# line is the only cheap way to tell the two apart. Grep for the NAME, not the
-# value — an absent line reads as a clean run.
-echo "[startup] image_marker=2026-08-24-terminal-breaker-and-workspace-group" >> "$LOG_FILE"
+# Image marker. An evict that did not take cold-boots the OLD image while
+# reporting success, and a changed startup line is the only cheap way to tell
+# the two apart. Grep for the NAME, not the value — an absent line reads as a
+# clean run.
+#
+# ⚠️ DERIVED, never hand-written. This was a literal date string carrying the
+# instruction "bump on every container image change", and on 2026-08-25 two
+# commits changed this very file and the egress guard without bumping it — so
+# three agents running a NEW image all reported image_marker=2026-08-24 and the
+# marker argued for the opposite of the truth. A marker maintained by
+# discipline is worse than no marker, because it still reads as authoritative
+# once the discipline lapses. Hashing the files it describes cannot lapse.
+IMAGE_MARKER="$(cat /usr/local/bin/start-hermes.sh /usr/local/bin/egress-guard.js \
+  /usr/local/bin/setup-terminal.sh 2>/dev/null | sha256sum | cut -c1-16)"
+echo "[startup] image_marker=${IMAGE_MARKER:-unavailable}" >> "$LOG_FILE"
 
 echo "=== $(date -u) launching hermes gateway (user=${RUN_USER}) ===" >> "$LOG_FILE"
 exec gosu "${RUN_USER}" hermes gateway >> "$LOG_FILE" 2>&1
