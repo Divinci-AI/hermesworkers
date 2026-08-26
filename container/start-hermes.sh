@@ -862,7 +862,21 @@ fi
 # config-set argv.
 if [ "${HERMES_BUFFER_MCP_ENABLED:-false}" = "true" ] || [ "${HERMES_BUFFER_MCP_ENABLED:-}" = "1" ]; then
   BUFFER_URL="https://mcp.buffer.com/mcp"
-  if [ -n "${MCP_BUFFER_API_KEY:-}" ]; then
+  # ⚠️ REGISTERING WITHOUT A KEY IS NOT A DEGRADED MODE, IT IS A LOOP.
+  # mcp.buffer.com answers an unauthenticated connect with 401, and the client
+  # retries 3x, parks, and starts again on the next turn — forever, because
+  # nothing about a missing secret ever changes on its own. Measured
+  # 2026-08-22: 960 of 999 gateway log lines (96%) were Buffer retries; still
+  # 28% on a freshly evicted container 2026-08-26. The gateway log is the ONLY
+  # window into a hosted container, so this is not cosmetic — it is the window
+  # being painted over by a feature that has never once worked in production.
+  #
+  # Skipping is also self-correcting: seed MCP_BUFFER_API_KEY and the next boot
+  # registers normally. Flipping HERMES_BUFFER_MCP_ENABLED off instead would
+  # have needed a second, opposite edit later, and the intent would be lost.
+  if [ -z "${MCP_BUFFER_API_KEY:-}" ]; then
+    echo "[startup] buffer MCP NOT registered: MCP_BUFFER_API_KEY is unset. Enabled without a key is a 401 retry loop that floods this log; seed the secret and reboot." >> "$LOG_FILE"
+  else
     if [ -f "$HERMES_ENV_FILE" ]; then
       grep -vE '^MCP_BUFFER_API_KEY=' "$HERMES_ENV_FILE" > "${HERMES_ENV_FILE}.nobuffer" 2>/dev/null \
         || cp "$HERMES_ENV_FILE" "${HERMES_ENV_FILE}.nobuffer"
@@ -871,17 +885,13 @@ if [ "${HERMES_BUFFER_MCP_ENABLED:-false}" = "true" ] || [ "${HERMES_BUFFER_MCP_
     fi
     printf 'MCP_BUFFER_API_KEY=%s\n' "${MCP_BUFFER_API_KEY}" >> "$HERMES_ENV_FILE"
     chmod 600 "$HERMES_ENV_FILE"
-  fi
-  hermes config set mcp_servers.buffer.url "${BUFFER_URL}" >> "$LOG_FILE" 2>&1 || true
-  hermes config set mcp_servers.buffer.enabled true >> "$LOG_FILE" 2>&1 || true
-  hermes config set mcp_servers.buffer.timeout 120 >> "$LOG_FILE" 2>&1 || true
-  hermes config set mcp_servers.buffer.connect_timeout 30 >> "$LOG_FILE" 2>&1 || true
-  hermes config set mcp_servers.buffer.skip_preflight true >> "$LOG_FILE" 2>&1 || true
-  if [ -n "${MCP_BUFFER_API_KEY:-}" ]; then
+    hermes config set mcp_servers.buffer.url "${BUFFER_URL}" >> "$LOG_FILE" 2>&1 || true
+    hermes config set mcp_servers.buffer.enabled true >> "$LOG_FILE" 2>&1 || true
+    hermes config set mcp_servers.buffer.timeout 120 >> "$LOG_FILE" 2>&1 || true
+    hermes config set mcp_servers.buffer.connect_timeout 30 >> "$LOG_FILE" 2>&1 || true
+    hermes config set mcp_servers.buffer.skip_preflight true >> "$LOG_FILE" 2>&1 || true
     hermes config set mcp_servers.buffer.headers.Authorization 'Bearer ${env:MCP_BUFFER_API_KEY}' >> "$LOG_FILE" 2>&1 || true
     echo "[startup] registered buffer MCP -> ${BUFFER_URL} (token=set)" >> "$LOG_FILE"
-  else
-    echo "[startup] registered buffer MCP -> ${BUFFER_URL} (token=MISSING — changelog queue duty cannot run)" >> "$LOG_FILE"
   fi
 else
   echo "[startup] buffer MCP NOT registered (HERMES_BUFFER_MCP_ENABLED!=true)" >> "$LOG_FILE"
