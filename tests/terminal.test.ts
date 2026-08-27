@@ -331,7 +331,15 @@ describe('deployed egress allowlists', () => {
     const src = readFileSync(join(__dirname, '..', file), 'utf8');
     const line = src.split('\n').find((l) => l.startsWith('EGRESS_ALLOWED_HOSTS ='));
     if (!line) throw new Error(`${file}: no EGRESS_ALLOWED_HOSTS`);
-    return line.split('=')[1].trim().replace(/^"|"$/g, '').split(',').map((h) => h.trim());
+    // ⚠️ Split on the FIRST `=` only. `split('=')[1]` truncated the list at
+    // the first `=host` exact-only entry, so every assertion below silently
+    // stopped seeing the tail of the allowlist the day that syntax landed.
+    return line
+      .slice(line.indexOf('=') + 1)
+      .trim()
+      .replace(/^"|"$/g, '')
+      .split(',')
+      .map((h) => h.trim());
   };
 
   for (const file of ['wrangler.production.toml', 'wrangler.staging.toml']) {
@@ -351,9 +359,37 @@ describe('deployed egress allowlists', () => {
         expect(hosts).toContain('sdk.divinci.ai');
       });
 
+      it('lets the board MCP reach Fulcrum — as an EXACT entry, never a suffix', () => {
+        // Granted 2026-08-27. Before it, the Fulcrum MCP client could never
+        // connect, and `_signal_reconnect` on every new session (mcp_tool.py
+        // :4907) paid a full 3-attempt initial-connect cycle each time —
+        // measured at ~31s on a turn that made no deliberate tool call, which
+        // is how wakes were dying against the 300s `fetch:` ceiling.
+        expect(hosts).toContain('=fulcrum-acme.divinci.ai');
+        // ⚠️ The `=` is the point. A bare `fulcrum-acme.divinci.ai` entry is
+        // dot-anchored and would additionally admit *.fulcrum-acme.divinci.ai;
+        // this host is a single internal app and has no subdomains we want.
+        expect(hosts).not.toContain('fulcrum-acme.divinci.ai');
+      });
+
       it('covers every demo worker via the account subdomain', () => {
         // Suffix match — only our own account can deploy to it.
         expect(hosts).toContain('divinci-ai.workers.dev');
+      });
+
+      it('keeps PRODUCTION on Fulcrum\'s hard-whitelisted transport', () => {
+        // Now load-bearing in a way it was not before 2026-08-27: the egress
+        // allowlist grants this container reach to the Fulcrum host, so the
+        // ONLY thing standing between an unattended wake and `execute_command`
+        // / `write_file` — which run on the FULCRUM host, outside every guard
+        // this image builds — is that the URL names the observer transport.
+        // Verified live 2026-08-14: 12 tools vs 127, and execute_command
+        // refused at DISPATCH (-32602), not merely hidden from tools/list.
+        if (file !== 'wrangler.production.toml') return;
+        const src = readFileSync(join(__dirname, '..', file), 'utf8');
+        const line = src.split('\n').find((l) => l.startsWith('FULCRUM_MCP_URL'));
+        expect(line).toBeDefined();
+        expect(line).toContain('/mcp/observer');
       });
 
       it('names the R2 bucket EXACTLY, never the shared r2.dev suffix', () => {
