@@ -71,6 +71,28 @@ export interface Env {
    */
   HERMES_PROACTIVE_TOOLS_DISABLED?: string;
 
+  /**
+   * Wall-clock ceiling, in milliseconds, on a single hosted turn's
+   * `containerFetch`. Default 600000 (10 min).
+   *
+   * ⚠️ THE PLATFORM DOES NOT BOUND THIS — we do. Cloudflare documents the
+   * wall time of a Durable Object HTTP request as "unlimited while the caller
+   * remains connected", so every ceiling on a wake is one of ours, and this
+   * is the tightest.
+   *
+   * The number is NOT free to raise. The sweep that drives wakes
+   * (`proactive-tick` in public-api) runs its agents SERIALLY inside one
+   * request, and that request is made from the connector-sync-worker's
+   * ten-minute (`*∕10`) cron branch — which Cloudflare caps at 15 minutes of wall clock,
+   * shared with the Slack keepalive and the fleet digest either side of it,
+   * and which fires again every 10 minutes. So the real budget is the cron
+   * cadence, not the cron limit: 600000 lets one long agent use a whole
+   * sweep while remaining unable to overlap the next firing. Raising it past
+   * the cadence requires shortening the sweep's own deadline to compensate —
+   * they are one setting in two places.
+   */
+  HERMES_TURN_TIMEOUT_MS?: string;
+
   // Hosted (multi-tenant) mode: shared secret proving the caller is Divinci's
   // public-api backend. When set, hosted routes require it AND a trusted agent
   // id; the DO/container is resolved per-agent. Absent ⇒ single-tenant mode.

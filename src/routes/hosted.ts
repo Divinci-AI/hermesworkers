@@ -16,6 +16,7 @@ import {
   SERVICE_AGENT_HEADER,
 } from '../lib/tenant';
 import { withRetry } from '../lib/resilience';
+import { resolveTurnTimeoutMs } from '../lib/turn-timeout';
 import { ensureGateway, HERMES_API_PORT, killGateway, restartGateway } from '../services/container-lifecycle';
 import { parseSlackApplyBody, buildSlackApplyShell } from '../lib/slack-platform';
 import { BOOT_CHECK_COMMAND, parseBootCheck } from '../lib/boot-check';
@@ -413,7 +414,18 @@ hosted.post('/hosted/agent/v1/chat/completions', async (c) => {
   try {
     const response = await withRetry<Response>(
       () => (container as any).containerFetch(upstream, HERMES_API_PORT),
-      { attempts: 2, timeoutMs: 300_000, isRetryable: () => false, label: `fetch:${agentId}` },
+      {
+        // `attempts: 1`, stated rather than implied. This read `attempts: 2`
+        // with `isRetryable: () => false`, which can never take the second
+        // attempt — dead config that read as a retry policy. A wake is
+        // METERED and its tools have side effects, so one attempt is also
+        // the correct policy: replaying a turn that may already have posted
+        // to Slack or written a task is worse than failing it.
+        attempts: 1,
+        timeoutMs: resolveTurnTimeoutMs(c.env.HERMES_TURN_TIMEOUT_MS),
+        isRetryable: () => false,
+        label: `fetch:${agentId}`,
+      },
     );
     return new Response(response.body, {
       status: response.status,
