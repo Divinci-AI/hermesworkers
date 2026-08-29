@@ -190,6 +190,31 @@ export interface Env {
    * refreshes from refresh_token on the first connect if they are absent.
    */
   MCP_CANVA_OAUTH_JSON?: string;
+
+  // Divinci MCP (remote HTTP). Off unless "true". start-hermes.sh registers
+  // mcp_servers.divinci → https://mcp.divinci.app/{whitelabelId}/mcp with
+  // Bearer DIVINCI_API_KEY.
+  //
+  // This is how the agent gets web search and a guarded single-URL scrape at
+  // all: Hermes has no web_search/web_fetch of its own, and the bounded
+  // terminal is blocked from the open web by design.
+  //
+  // ⚠️ The tool surface is the union of `mcpConfig.exposedTools` across the
+  // whitelabel's MCP-enabled releases, and an UNSET list means the whole
+  // catalog — spend-marked tools, release_update, hermes_create and
+  // hermes_proactive_set included. Curate the release's exposedTools before
+  // enabling this; that allowlist is the entire boundary.
+  //
+  // ⚠️ Single-tenant, like the three above: this container is one Durable
+  // Object with no whitelabel of its own, so enabling this binds the whole
+  // container to ONE whitelabel. Divinci-owned deployments only.
+  HERMES_DIVINCI_MCP_ENABLED?: string;
+  /** The whitelabel whose MCP surface the agent gets. No default — it is per-tenant. */
+  DIVINCI_WHITELABEL_ID?: string;
+  /** Full endpoint override. Wins over DIVINCI_WHITELABEL_ID when set. */
+  DIVINCI_MCP_URL?: string;
+  /** Divinci API key. Prefer wrangler secret put DIVINCI_API_KEY. */
+  DIVINCI_API_KEY?: string;
 }
 
 /**
@@ -317,6 +342,15 @@ export function collectProviderKeys(env: Env): Record<string, string> {
   if (env.HERMES_CANVA_MCP_ENABLED === "true" || env.HERMES_CANVA_MCP_ENABLED === "1") {
     keys.HERMES_CANVA_MCP_ENABLED = "true";
     if (env.MCP_CANVA_OAUTH_JSON) keys.MCP_CANVA_OAUTH_JSON = env.MCP_CANVA_OAUTH_JSON;
+  }
+  if (env.HERMES_DIVINCI_MCP_ENABLED === "true" || env.HERMES_DIVINCI_MCP_ENABLED === "1") {
+    keys.HERMES_DIVINCI_MCP_ENABLED = "true";
+    // The whitelabel id is forwarded even though it is not a secret: the
+    // endpoint is per-tenant and has no default, so without it start-hermes.sh
+    // has no URL to register and skips.
+    if (env.DIVINCI_WHITELABEL_ID) keys.DIVINCI_WHITELABEL_ID = env.DIVINCI_WHITELABEL_ID;
+    if (env.DIVINCI_MCP_URL) keys.DIVINCI_MCP_URL = env.DIVINCI_MCP_URL;
+    if (env.DIVINCI_API_KEY) keys.DIVINCI_API_KEY = env.DIVINCI_API_KEY;
   }
 
   return keys;

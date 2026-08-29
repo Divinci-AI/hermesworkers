@@ -1004,6 +1004,85 @@ else
   echo "[startup] canva MCP NOT registered (HERMES_CANVA_MCP_ENABLED!=true)" >> "$LOG_FILE"
 fi
 
+# ── Divinci MCP (remote HTTP) ──────────────────────────────────────────────
+#
+# Gives the agent the Divinci platform's own tools — including web search and
+# the guarded single-URL scrape. Gated off unless HERMES_DIVINCI_MCP_ENABLED=true.
+#
+# WHY THIS IS THE BRIDGE, RATHER THAN NEW HERMES TOOLS
+#
+# Hermes has no web_search and no web_fetch, and its bounded terminal is hard
+# blocked from the open web by design (iptables owner-match on uid 10002 plus
+# the egress guard). So the agent currently cannot read a web page at all.
+# Adding a Hermes-side fetch tool would mean building a second, weaker copy of
+# the platform's SSRF guard, provider fallback and escrow billing inside a
+# container. mcp.divinci.app already has all three.
+#
+# ⚠️ WHAT THE AGENT GETS IS DECIDED BY THE RELEASE, NOT HERE.
+# The whitelabel endpoint's surface is the union of `mcpConfig.exposedTools`
+# across its MCP-enabled releases, and an empty/unset list means THE WHOLE
+# CATALOG — which includes spend-marked tools, release_update, hermes_create
+# and hermes_proactive_set. Registering this against a release that has not
+# curated its tools hands the container the full surface. Curate the release's
+# exposedTools first; that allowlist is the entire boundary, because the
+# per-tool rate limiter (checkToolRateLimit) has no callers and TOOL_RISK
+# enforces nothing.
+#
+# ⚠️ SINGLE-TENANT. This container is one Durable Object (idFromName('main'))
+# with no whitelabel concept of its own, so this binds the WHOLE container to
+# ONE whitelabel's MCP surface. Divinci-owned deployments only — the same
+# constraint Fulcrum, Buffer and Canva carry above, for the same reason.
+#
+# ⚠️ EGRESS_ALLOWED_HOSTS is deliberately NOT widened for this. That allowlist
+# governs the bounded TERMINAL (uid 10002, iptables owner-match); the agent
+# process makes its MCP connections as the runtime user and is not subject to
+# it. Adding a host to a security allowlist that would not consult it buys
+# nothing and mis-states what the allowlist covers.
+if [ "${HERMES_DIVINCI_MCP_ENABLED:-false}" = "true" ] || [ "${HERMES_DIVINCI_MCP_ENABLED:-}" = "1" ]; then
+  # An explicit URL wins; otherwise build the per-whitelabel endpoint.
+  if [ -n "${DIVINCI_MCP_URL:-}" ]; then
+    DIVINCI_URL="${DIVINCI_MCP_URL}"
+  elif [ -n "${DIVINCI_WHITELABEL_ID:-}" ]; then
+    DIVINCI_URL="https://mcp.divinci.app/${DIVINCI_WHITELABEL_ID}/mcp"
+  else
+    DIVINCI_URL=""
+  fi
+
+  # Same reasoning as Buffer above, and the same failure: the whitelabel MCP
+  # endpoint answers an unauthenticated connect with 401 unless the release
+  # opted into anonymous access, and a missing secret never changes on its own,
+  # so "enabled without a key" is a retry loop that floods the ONLY window into
+  # a hosted container. Skipping is self-correcting; seed the secret and reboot.
+  if [ -z "${DIVINCI_URL}" ]; then
+    echo "[startup] divinci MCP NOT registered: set DIVINCI_WHITELABEL_ID (or DIVINCI_MCP_URL). The endpoint is per-whitelabel; there is no default." >> "$LOG_FILE"
+  elif [ -z "${DIVINCI_API_KEY:-}" ]; then
+    echo "[startup] divinci MCP NOT registered: DIVINCI_API_KEY is unset. Enabled without a key is a 401 retry loop that floods this log; seed the secret and reboot." >> "$LOG_FILE"
+  else
+    if [ -f "$HERMES_ENV_FILE" ]; then
+      grep -vE '^DIVINCI_API_KEY=' "$HERMES_ENV_FILE" > "${HERMES_ENV_FILE}.nodivinci" 2>/dev/null \
+        || cp "$HERMES_ENV_FILE" "${HERMES_ENV_FILE}.nodivinci"
+      cat "${HERMES_ENV_FILE}.nodivinci" > "$HERMES_ENV_FILE"
+      rm -f "${HERMES_ENV_FILE}.nodivinci"
+    fi
+    printf 'DIVINCI_API_KEY=%s\n' "${DIVINCI_API_KEY}" >> "$HERMES_ENV_FILE"
+    chmod 600 "$HERMES_ENV_FILE"
+    hermes config set mcp_servers.divinci.url "${DIVINCI_URL}" >> "$LOG_FILE" 2>&1 || true
+    hermes config set mcp_servers.divinci.enabled true >> "$LOG_FILE" 2>&1 || true
+    hermes config set mcp_servers.divinci.timeout 120 >> "$LOG_FILE" 2>&1 || true
+    # 60s like Canva, not Buffer's 30: this endpoint resolves the whitelabel's
+    # MCP config and computes the tool surface across every enabled release
+    # before it answers, and public-api cold-starts.
+    hermes config set mcp_servers.divinci.connect_timeout 60 >> "$LOG_FILE" 2>&1 || true
+    hermes config set mcp_servers.divinci.skip_preflight true >> "$LOG_FILE" 2>&1 || true
+    # The literal ${env:…} form keeps the key out of a loggable argv AND out of
+    # config.yaml; Hermes resolves it from the 0600 env file at connect time.
+    hermes config set mcp_servers.divinci.headers.Authorization 'Bearer ${env:DIVINCI_API_KEY}' >> "$LOG_FILE" 2>&1 || true
+    echo "[startup] registered divinci MCP -> ${DIVINCI_URL} (token=set)" >> "$LOG_FILE"
+  fi
+else
+  echo "[startup] divinci MCP NOT registered (HERMES_DIVINCI_MCP_ENABLED!=true)" >> "$LOG_FILE"
+fi
+
 # Optional defense in depth: drop the .env after the gateway is up, so even a
 # regression in the approval config finds nothing to read.
 #
