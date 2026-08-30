@@ -112,3 +112,44 @@ describe('buildSlackApplyShell', () => {
     expect(sh).toContain('slack_enabled=1');
   });
 });
+
+describe('bot-loop guard: allow_bots + require_mention', () => {
+  // Three Hermes bots share #hermes as of 2026-08-29 (Local, Team, Sigma) and
+  // Local runs `slack.allow_bots: all`. Only require_mention prevents every
+  // agent answering every other agent forever. These pin that the provisioner
+  // cannot ship the dangerous pair.
+  const script = (over: Record<string, unknown>) =>
+    buildSlackApplyShell({
+      enabled: true,
+      botToken: 'xoxb-test-token',
+      appToken: 'xapp-test-token',
+      allowedUsers: '',
+      allowedChannels: '',
+      ...over,
+    } as never);
+
+  it('pins allow_bots off when mentions are not required', () => {
+    const s = script({ requireMention: false });
+    expect(s).toContain('slack.require_mention false');
+    expect(s).toContain('slack.allow_bots none');
+  });
+
+  it('leaves allow_bots alone when mentions ARE required', () => {
+    // require_mention:true is the thing that makes allow_bots:all safe, so a
+    // deliberate `all` on one instance must survive provisioning.
+    const s = script({ requireMention: true });
+    expect(s).toContain('slack.require_mention true');
+    expect(s).not.toContain('allow_bots');
+  });
+
+  it('defaults to the safe side when requireMention is omitted', () => {
+    const s = script({});
+    expect(s).toContain('slack.require_mention true');
+  });
+
+  it('never emits allow_bots all', () => {
+    for (const rm of [true, false, undefined]) {
+      expect(script({ requireMention: rm })).not.toContain('allow_bots all');
+    }
+  });
+});

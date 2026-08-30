@@ -261,6 +261,20 @@ export function buildSlackApplyShell(body: SlackApplyBody): string {
     `hermes config set platforms.slack.extra.reply_in_thread ${replyInThread} 2>/dev/null || true`,
     `hermes config set slack.require_mention ${requireMention} 2>/dev/null || true`,
     `hermes config set platforms.slack.require_mention ${requireMention} 2>/dev/null || true`,
+    // ⛔ `allow_bots: all` + `require_mention: false` is an unbounded
+    // bot-to-bot loop, and our agents SHARE channels: as of 2026-08-29 three
+    // Hermes bots sit in #hermes (Local, Team, Sigma) and Local already runs
+    // `slack.allow_bots: all`. Today only require_mention stands between that
+    // and every agent answering every other agent forever — a one-field edit
+    // away, on a field whose name does not hint at the danger.
+    //
+    // So the pair is made unrepresentable HERE rather than documented: turning
+    // mentions off also pins bot messages off. An agent that must both listen
+    // to bots and answer unmentioned needs a deliberate manual config on a
+    // single instance, not a provisioning default that reaches the fleet.
+    ...(requireMention === 'false'
+      ? [`hermes config set slack.allow_bots none 2>/dev/null || true`]
+      : []),
     `chown -R hermes:hermes ${shellSingleQuote(`${home}/.hermes`)} 2>/dev/null || true`,
     'echo "slack_enabled=1"',
     `wc -c < ${shellSingleQuote(file)} | tr -d ' ' | xargs -I{} echo "slack_env_bytes={}"`,
