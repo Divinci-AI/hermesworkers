@@ -709,4 +709,61 @@ hosted.get('/hosted/agent/net-diag', async (c) => {
  */
 hosted.route('/', terminal);
 
+
+// ── Fleet claim leases ───────────────────────────────────────────────────────
+//
+// The enforced half of "don't dogpile". Today the fleet divides work by being
+// ASKED to in a prompt ("say which lever you are taking"), which is not
+// turn-taking; the only enforced control is shadow mode, which mutes an agent
+// rather than sequencing it.
+//
+// Scoped by fleet, NOT by agent: the point is that agents in the same fleet
+// contend with each other, so the DO id is the fleet id. `X-Divinci-Fleet-Id`
+// is supplied by the service-authenticated caller (public-api) alongside the
+// agent header the rest of this file uses; an agent cannot choose its own
+// fleet, or it could trivially escape contention by claiming in a private one.
+const FLEET_HEADER = 'x-divinci-fleet-id';
+
+type FleetStub =
+  | { ok: true; stub: DurableObjectStub }
+  | { ok: false; status: 400 | 501; error: string };
+
+function fleetStub(c: { env: Env; req: { header: (n: string) => string | undefined } }): FleetStub {
+  const ns = c.env.FLEET;
+  if (!ns) {
+    return { ok: false, status: 501, error: 'fleet coordinator not configured on this deployment' };
+  }
+  const fleetId = c.req.header(FLEET_HEADER);
+  // Constrained because it names a DO; an unvalidated id is a way to address
+  // an arbitrary object.
+  if (!fleetId || !/^[A-Za-z0-9_-]{1,128}$/.test(fleetId)) {
+    return { ok: false, status: 400, error: `missing or invalid ${FLEET_HEADER}` };
+  }
+  return { ok: true, stub: ns.get(ns.idFromName(`fleet:${fleetId}`)) };
+}
+
+hosted.get('/hosted/fleet/claims', async (c) => {
+  const f = fleetStub(c);
+  if (!f.ok) return c.json({ ok: false, error: f.error }, f.status);
+  return f.stub.fetch(new Request('https://do/claims', { method: 'GET' }));
+});
+
+for (const op of ['acquire', 'release'] as const) {
+  hosted.post(`/hosted/fleet/claims/${op}`, async (c) => {
+    const f = fleetStub(c);
+    if (!f.ok) return c.json({ ok: false, error: f.error }, f.status);
+    // The agent identity is taken from the service-auth gate, never from the
+    // body: a self-declared holder lets any agent claim or release as another,
+    // which is the same as having no ledger.
+    let body: Record<string, unknown> = {};
+    try { body = await c.req.json(); } catch { /* empty body is valid for release-less ops */ }
+    body.holder = c.get('agentId');
+    return f.stub.fetch(new Request(`https://do/${op}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    }));
+  });
+}
+
 export { hosted };

@@ -6,6 +6,7 @@ import { instance } from './routes/instance';
 import { hosted } from './routes/hosted';
 import { maybeHandleDashboard } from './services/dashboard-proxy';
 
+export { FleetCoordinator } from './fleetCoordinator';
 export { HermesInstance } from './hermesContainer';
 
 const app = new Hono<{ Bindings: Env }>();

@@ -23,6 +23,11 @@ import { composeTerminalAllowlist } from './terminal';
 export interface Env {
   HERMES: DurableObjectNamespace<HermesInstance>;
 
+  // Fleet claim ledger — one DO per fleet (see fleetCoordinator.ts). Optional
+  // so a Worker deployed without the migration still boots; the routes 501
+  // rather than throwing on an undefined binding.
+  FLEET?: DurableObjectNamespace;
+
   ANTHROPIC_API_KEY?: string;
   OPENROUTER_API_KEY?: string;
   OPENAI_API_KEY?: string;
