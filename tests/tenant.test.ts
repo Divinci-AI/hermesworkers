@@ -129,3 +129,70 @@ describe('getContainerForAgent — routing isolation invariant', () => {
     }
   });
 });
+
+
+describe('checkServiceAuth — rotation window (SERVICE_AUTH_SECRET_NEXT)', () => {
+  const OLD = 'svc-secret-old';
+  const NEW = 'svc-secret-new';
+  const AGENT = 'agent-01hzx9k2q3';
+
+  it('accepts BOTH secrets while NEXT is set — the whole point', () => {
+    // Rotating with only one accepted secret breaks every hosted-Hermes call
+    // from the Worker deploy until public-api restarts, because public-api
+    // reads Infisical at BOOT. A rotation that costs an outage is a rotation
+    // nobody performs, which is how an exposed credential stays live.
+    const e = env({ SERVICE_AUTH_SECRET: OLD, SERVICE_AUTH_SECRET_NEXT: NEW });
+    return Promise.all([
+      checkServiceAuth(e, `Bearer ${OLD}`, AGENT).then((r) => expect(r.ok).toBe(true)),
+      checkServiceAuth(e, `Bearer ${NEW}`, AGENT).then((r) => expect(r.ok).toBe(true)),
+    ]);
+  });
+
+  it('still rejects everything else while NEXT is set', async () => {
+    const e = env({ SERVICE_AUTH_SECRET: OLD, SERVICE_AUTH_SECRET_NEXT: NEW });
+    expect((await checkServiceAuth(e, 'Bearer neither', AGENT)).ok).toBe(false);
+  });
+
+  it('an EMPTY next is not a second credential', async () => {
+    // HONEST NOTE ON WHAT THIS DOES AND DOES NOT PIN.
+    //
+    // Measured, not assumed: removing `next.length > 0` does NOT fail this
+    // test, and neither does removing the `if (!provided)` early return. The
+    // property is jointly guaranteed a third way — timingSafeEqual never
+    // matches an absent or empty bearer against a non-empty secret — so both
+    // of those lines are defence-in-depth rather than the thing doing the
+    // work. Said plainly because the opposite claim is the tempting one, and a
+    // comment asserting a guard is load-bearing when it is not is how the
+    // guard gets deleted later by someone who checked.
+    //
+    // This therefore pins the PROPERTY, not any one line: with NEXT empty or
+    // unset, no bearer value authenticates except the primary. That is the
+    // thing that must stay true through any refactor of this function.
+    for (const next of ['', undefined]) {
+      const e = env({ SERVICE_AUTH_SECRET: OLD, SERVICE_AUTH_SECRET_NEXT: next });
+      expect((await checkServiceAuth(e, 'Bearer ', AGENT)).ok).toBe(false);
+      expect((await checkServiceAuth(e, 'Bearer', AGENT)).ok).toBe(false);
+      expect((await checkServiceAuth(e, '', AGENT)).ok).toBe(false);
+      for (const bogus of ['Bearer null', 'Bearer undefined', 'Bearer 0', 'null', 'Basic ']) {
+        expect((await checkServiceAuth(e, bogus, AGENT)).ok).toBe(false);
+      }
+      expect((await checkServiceAuth(e, `Bearer ${OLD}`, AGENT)).ok).toBe(true);
+    }
+  });
+
+  it('NEXT alone cannot authorise when the primary is unset', async () => {
+    // Hosted mode is configured by SERVICE_AUTH_SECRET; a deployment carrying
+    // only NEXT is misconfigured and must fail closed, not half-open.
+    const e = env({ SERVICE_AUTH_SECRET: undefined, SERVICE_AUTH_SECRET_NEXT: NEW });
+    expect(await checkServiceAuth(e, `Bearer ${NEW}`, AGENT)).toMatchObject({
+      ok: false,
+      status: 503,
+    });
+  });
+
+  it('rotation completes: once NEXT is removed the old secret stops working', async () => {
+    const done = env({ SERVICE_AUTH_SECRET: NEW });
+    expect((await checkServiceAuth(done, `Bearer ${NEW}`, AGENT)).ok).toBe(true);
+    expect((await checkServiceAuth(done, `Bearer ${OLD}`, AGENT)).ok).toBe(false);
+  });
+});

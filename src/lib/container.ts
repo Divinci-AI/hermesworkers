@@ -102,6 +102,8 @@ export interface Env {
   // public-api backend. When set, hosted routes require it AND a trusted agent
   // id; the DO/container is resolved per-agent. Absent ⇒ single-tenant mode.
   SERVICE_AUTH_SECRET?: string;
+  /** Second accepted service secret, for zero-downtime rotation. */
+  SERVICE_AUTH_SECRET_NEXT?: string;
 
   CHAT_RATE_LIMITER?: RateLimit;
   ADMIN_RATE_LIMITER?: RateLimit;

@@ -84,7 +84,33 @@ export async function checkServiceAuth(
   if (!secret) return { ok: false, status: 503, error: 'hosted_mode_not_configured' };
 
   const provided = extractBearer(authorizationHeader);
-  if (!provided || !(await timingSafeEqual(provided, secret))) {
+  if (!provided) return { ok: false, status: 401, error: 'unauthorized' };
+
+  // ── ROTATION WINDOW ────────────────────────────────────────────────────────
+  //
+  // SERVICE_AUTH_SECRET_NEXT is a SECOND accepted secret, and it exists so that
+  // rotating the first one is not an outage.
+  //
+  // Without it the Worker accepts exactly one value while public-api sends
+  // exactly one value, and public-api only reads Infisical at BOOT — so any
+  // rotation breaks every hosted-Hermes call from the moment the Worker
+  // deploys until the API restarts. A credential whose rotation costs an
+  // outage is a credential nobody rotates, which is how the exposed one stays
+  // live. Making rotation cheap is the actual control.
+  //
+  //   1. deploy the Worker with NEXT = the new secret   (both accepted)
+  //   2. update Infisical, restart public-api           (now sends the new one)
+  //   3. deploy with SERVICE_AUTH_SECRET = new, NEXT unset
+  //
+  // Both comparisons are constant-time, and NEXT is only consulted when it is
+  // a non-empty string — an unset or blank NEXT must never become a second
+  // credential that an empty bearer could satisfy.
+  const next = env.SERVICE_AUTH_SECRET_NEXT;
+  const matchesPrimary = await timingSafeEqual(provided, secret);
+  const matchesNext = typeof next === 'string' && next.length > 0
+    ? await timingSafeEqual(provided, next)
+    : false;
+  if (!matchesPrimary && !matchesNext) {
     return { ok: false, status: 401, error: 'unauthorized' };
   }
 
