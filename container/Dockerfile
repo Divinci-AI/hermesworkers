@@ -190,11 +190,19 @@ RUN git clone --depth 1 --branch "${HERMES_VERSION}" https://github.com/NousRese
 # that claims otherwise — the exact "a success line is not an outcome" trap
 # that cost the 2026-08-25 night shift.
 #
-# 0001: `_summarize_api_error` crashes on an unread streaming response, so the
-#       error REPORTER replaces the error it reports. See the patch header.
+# 0001 (REMOVED 2026-09-01): `_summarize_api_error` crashed on an unread
+#       streaming response, so the error REPORTER replaced the error it
+#       reports. Upstream v2026.8.31 fixed this natively: the response-text
+#       access is now wrapped in try/except Exception (catches
+#       httpx.ResponseNotRead, a RuntimeError that getattr's default cannot
+#       absorb) — byte-for-byte the patch's behaviour. Removing the patch was
+#       verified against the v2026.8.31 tree before the bump; keep the
+#       nullglob so an EMPTY patch set still builds, and any NEW patch still
+#       fails hard.
 COPY patches/ /opt/hermes-patches/
 WORKDIR /opt/hermes-agent
 RUN set -eu; \
+    shopt -s nullglob; \
     for p in /opt/hermes-patches/*.patch; do \
       echo "applying $(basename "$p")"; \
       git apply --verbose "$p"; \
