@@ -198,8 +198,8 @@ RUN git clone --depth 1 --branch "${HERMES_VERSION}" https://github.com/NousRese
 #       absorb) — byte-for-byte the patch's behaviour. Removing the patch was
 #       verified against the v2026.8.31 tree before the bump; keep the
 #       nullglob so an EMPTY patch set still builds, and any NEW patch still
-#       fails hard.
-COPY patches/ /opt/hermes-patches/
+#       fails hard. (The `COPY patches/` line was removed with the patch;
+#       re-add it — and the patches dir — when a new patch lands.)
 WORKDIR /opt/hermes-agent
 RUN set -eu; \
     shopt -s nullglob; \
