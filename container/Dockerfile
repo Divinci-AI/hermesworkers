@@ -170,8 +170,8 @@ RUN mkdir -p /home/hermes
 # resolves it to commit 9de9c25f; that warning is expected, not a defect. The
 # clone FAILS HARD on a bad tag — no silent fallback to an unpinned default
 # branch. Override both to bump.
-ENV HERMES_VERSION=v2026.8.31
-ARG HERMES_COMMIT="6e8f8418e6378eb2617e4de074e13dedd091b8af"
+ENV HERMES_VERSION=v2026.9.7
+ARG HERMES_COMMIT="9949d0d324a3a06ac238e01dd1c2103dbca09900"
 WORKDIR /opt
 RUN git clone --depth 1 --branch "${HERMES_VERSION}" https://github.com/NousResearch/hermes-agent.git hermes-agent \
     && if [ -n "${HERMES_COMMIT}" ]; then \
