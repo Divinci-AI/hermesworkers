@@ -126,8 +126,6 @@ The first request triggers a cold start — expect 15–60 seconds. Subsequent r
 
 ## Endpoints
 
-| Method | Path                              | Description                                                  |
-| ------ | --------------------------------- | ------------------------------------------------------------ |
 | Method | Path                              | Description                                                  | Auth  |
 | ------ | --------------------------------- | ------------------------------------------------------------ | ----- |
 | GET    | `/`                               | Self-describing JSON                                         | none  |
@@ -143,6 +141,34 @@ The first request triggers a cold start — expect 15–60 seconds. Subsequent r
 `ADMIN_TOKEN` (falls back to `API_TOKEN` when `ADMIN_TOKEN` is unset). Protected
 routes **fail closed** (`503`) when no token is configured, unless
 `ALLOW_UNAUTHENTICATED=true`. Only `/` is public.
+
+## Hosted (multi-tenant) mode
+
+The routes above are single-tenant (one container per deployment). Setting
+`SERVICE_AUTH_SECRET` additionally enables a **multi-tenant** surface under
+`/hosted/*`: one Durable Object → one Sandbox container **per agent**, so many
+isolated agents run behind a single Worker. Intended to be fronted by a trusted
+backend (e.g. the Divinci app) that authenticates end users and calls the Worker
+service-to-service.
+
+| Method | Path                                    | Description                                          |
+| ------ | --------------------------------------- | ---------------------------------------------------- |
+| POST   | `/hosted/agent/v1/chat/completions`     | Per-agent OpenAI-compatible chat                     |
+| GET    | `/hosted/agent/boot-check`              | Report the OS user the gateway runs as (non-root proof) |
+| POST   | `/hosted/agent/probe`                   | Write+read a per-container marker (isolation proof)  |
+| GET    | `/hosted/agent/probe`                   | Read the marker (assert no cross-agent read)         |
+
+Every `/hosted/*` request requires:
+- `Authorization: Bearer <SERVICE_AUTH_SECRET>` (constant-time checked), and
+- `X-Divinci-Agent-Id: <agentId>` — a **server-trusted**, strictly-validated id
+  (`^[a-z0-9](?:[a-z0-9-]{6,62}[a-z0-9])$`). The DO is resolved under an
+  `agent:<id>` namespace, and an invalid id is rejected (400), never routed to a
+  shared container.
+
+Container calls are wrapped in a bounded-retry + per-attempt-timeout helper for
+resilience. Isolation is proven live by `scripts/isolation-smoke.sh` and
+functional behavior (non-root boot + real chat) by `scripts/functional-smoke.sh`
+— see `docs/hosted-staging-deploy.md`.
 
 ## Native dashboard (optional)
 

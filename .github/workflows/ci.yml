@@ -1,10 +1,29 @@
 name: CI
 
+# ⚠️ NO BRANCH FILTER, DELIBERATELY.
+#
+# This was `branches: [main]` on both triggers. All work happens on
+# feat/multitenant-hosted, so this workflow had FOUR runs in its entire history
+# and none at all between 2026-07-16 and 2026-08-25 — every one of those four a
+# failure. In that window the suite grew to 283 tests, the image build job
+# verified no image, and `npm audit` never ran. Guards were written, reviewed
+# and mutation-tested against a runner that was never going to execute them.
+#
+# ⚠️ The first version of this comment said "ran EXACTLY ONCE, on 2026-05-11".
+# That came from `gh run list`, which returned a PARTIAL list; the API
+# (`/actions/runs`) reports total_count=4 with a different oldest date. If you
+# need run history, read the API — the CLI's default listing silently truncates,
+# which is the same class of wrong-because-the-surface-lied that this whole
+# workflow change is about.
+#
+# A branch allowlist is a promise that the list stays current. It did not, and
+# the failure is silent: a workflow that never triggers looks identical to a
+# workflow that passes. Enumerate nothing — run wherever work lands.
+#
+# Pinned by tests/ci-runs-on-every-branch.test.ts.
 on:
   push:
-    branches: [main]
   pull_request:
-    branches: [main]
 
 permissions:
   contents: read
@@ -30,6 +49,33 @@ jobs:
       - name: Dependency audit (production tree)
         run: npm audit --omit=dev --audit-level=high
 
+  shell:
+    name: Lint container shell
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      # start-hermes.sh is ~950 lines of boot logic that nothing executed until
+      # 2026-08-25 and nothing parsed. A syntax error in a branch taken only on
+      # a cold boot would ship green.
+      - name: Parse every shell script
+        run: |
+          set -o pipefail
+          rc=0
+          for f in container/*.sh container/tests/*.sh scripts/*.sh; do
+            [ -e "$f" ] || continue
+            if bash -n "$f"; then echo "  ok   $f"; else echo "  FAIL $f"; rc=1; fi
+          done
+          exit $rc
+      - name: shellcheck
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          # Advisory for now: the script carries inline disable directives but
+          # has never been linted, so a first run will have a backlog. Failing
+          # on it today would just teach people to ignore this job — the exact
+          # failure mode that made ci-tooling-tests.yml background noise.
+          shellcheck -S error container/*.sh container/tests/*.sh || \
+            echo "::warning::shellcheck reported findings (advisory, not gating)"
+
   docker:
     name: Build container image
     runs-on: ubuntu-latest
@@ -47,7 +93,56 @@ jobs:
           tags: hermesworkers:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # ⚠️ THE ONLY CHECK THAT EXECUTES ANYTHING. Everything else in this repo
+      # asserts on start-hermes.sh's TEXT, which cannot see a version-dependent
+      # fact about the pinned Hermes binary — and both 2026-08-25 production
+      # outages were exactly that. See container/tests/config-contract.sh.
+      - name: Config contract (inside the built image)
+        run: |
+          docker run --rm --entrypoint bash \
+            -v "$PWD/container/tests:/tests:ro" \
+            hermesworkers:ci /tests/config-contract.sh
+
+      # Second executing check, same reasoning as the one above: the defect is
+      # in the PINNED hermes-agent source, so only running it can see it.
+      #
+      # It also proves container/patches/*.patch is actually IN the image. A
+      # patch that stopped applying would leave every static check green while
+      # shipping the old behaviour — and the old behaviour is an error reporter
+      # that replaces the error it reports, which is the most expensive thing
+      # to ship silently.
+      #
+      # `timeout` for the same reason as the smoke check: a future entrypoint
+      # change must fail loudly rather than hang for six hours.
+      - name: Error-summariser contract (inside the built image)
+        run: |
+          timeout 300 docker run --rm --entrypoint bash \
+            -v "$PWD/container/tests:/tests:ro" \
+            hermesworkers:ci /tests/error-summariser-contract.sh
+      # ⚠️ `--entrypoint` IS LOAD-BEARING. WITHOUT IT THIS STEP HANGS FOREVER.
+      #
+      # The base image (cloudflare/sandbox) sets ENTRYPOINT
+      # ["/container-server/sandbox"], so `docker run <img> /usr/local/bin/hermes
+      # --version` executes `sandbox /usr/local/bin/hermes --version`: the
+      # sandbox server starts, ignores the arguments entirely, and runs until
+      # the job's 6-hour timeout.
+      #
+      # So this step never invoked hermes and COULD NOT FAIL — it could only
+      # hang. It went unnoticed because ci.yml triggered on `branches: [main]`
+      # while all work landed elsewhere, so it had effectively never executed.
+      # Turning CI on in 441c9db is what surfaced it, on the very first run.
+      #
+      # A check that cannot fail is not a weak check, it is an absent one that
+      # reports as present. Same class as `model_stored=` logging an argparse
+      # error as a value, and as `hermes config set model` printing ✓ while
+      # destroying the mapping.
+      #
+      # `timeout` bounds it so a future entrypoint change cannot silently
+      # restore the hang: it would fail loudly instead of costing six hours.
       - name: Smoke check
         run: |
-          docker run --rm hermesworkers:ci /usr/local/bin/hermes --version
-          docker run --rm hermesworkers:ci /usr/local/bin/hermes dashboard --help > /dev/null
+          timeout 60 docker run --rm --entrypoint /usr/local/bin/hermes \
+            hermesworkers:ci --version
+          timeout 60 docker run --rm --entrypoint /usr/local/bin/hermes \
+            hermesworkers:ci dashboard --help > /dev/null

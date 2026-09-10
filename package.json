@@ -13,13 +13,13 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@cloudflare/sandbox": "^0.7.20",
+    "@cloudflare/sandbox": "^0.12.4",
     "hono": "^4.6.0"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20250503.0",
+    "@cloudflare/workers-types": "^5.20260714.1",
     "typescript": "^5.6.0",
     "vitest": "^2.1.8",
-    "wrangler": "^3.95.0"
+    "wrangler": "^4.112.0"
   }
 }

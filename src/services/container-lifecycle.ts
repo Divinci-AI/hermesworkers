@@ -70,8 +70,16 @@ async function findGatewayProcess(container: DurableObjectStub): Promise<any | n
  * Hermes forks worker processes that don't always die with the tracked PID,
  * so we hit them with both SIGTERM (graceful, lets state persist to disk)
  * and SIGKILL via `pgrep`/`pkill` for anything still listening on the port.
+ *
+ * Then sweep orphaned `divinci_terminal` MCP children — see the comment on the
+ * sweep below for why the gateway's own teardown cannot be relied on here.
+ *
+ * `sleep` is injectable so tests do not sit through the real grace periods.
  */
-export async function killGateway(container: DurableObjectStub): Promise<void> {
+export async function killGateway(
+  container: DurableObjectStub,
+  sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
+): Promise<void> {
   // Graceful shutdown
   try {
     await (container as any).exec(
@@ -84,7 +92,7 @@ export async function killGateway(container: DurableObjectStub): Promise<void> {
   } catch {
     /* process may already be gone */
   }
-  await new Promise((r) => setTimeout(r, 3000));
+  await sleep(3000);
 
   // Force kill anything still listening on our ports
   try {
@@ -111,7 +119,32 @@ export async function killGateway(container: DurableObjectStub): Promise<void> {
     }
   }
 
-  await new Promise((r) => setTimeout(r, 1000));
+  // Sweep orphaned divinci_terminal MCP children, now that the gateway that
+  // owned them is gone.
+  //
+  // Hermes reaps its own stdio MCP subprocesses on a GRACEFUL exit
+  // (MCPServerTask.shutdown / _kill_orphaned_mcp_children). Its startup sweep
+  // cannot help after a hard exit: the orphan registry those functions read is
+  // in-process state, so SIGKILL takes the list of what to reap along with the
+  // process holding it. Every SIGKILL above therefore leaves a live
+  // mcp-terminal-server behind, and each restart adds one — four were counted
+  // in a live container on 2026-08-23, alongside a divinci_terminal that had
+  // gone unreachable on two agents at once and later recovered on its own.
+  //
+  // The gateway is dead by this point, so nothing legitimately holds one; a
+  // fresh gateway spawns its own.
+  try {
+    await (container as any).exec(
+      [
+        'kill -9 $(pgrep -f "mcp-terminal-server.js" 2>/dev/null) 2>/dev/null',
+        'true',
+      ].join('; '),
+    );
+  } catch {
+    /* nothing to reap */
+  }
+
+  await sleep(1000);
 }
 
 // ─── Boot ──────────────────────────────────────────────────────────

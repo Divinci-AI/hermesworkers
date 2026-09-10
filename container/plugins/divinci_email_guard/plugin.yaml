@@ -1,0 +1,6 @@
+name: divinci_email_guard
+version: 1.0.0
+description: "Restrict tool calls on unattended (email-driven) turns to a read-and-file allowlist, while leaving interactive Slack turns unrestricted. Hermes' approvals.mode does not gate MCP calls; this hook is the only per-request toolset control the agent offers."
+author: "Divinci"
+hooks:
+  - pre_tool_call

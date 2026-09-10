@@ -22,9 +22,17 @@ enabled = true
 name = "HERMES"
 class_name = "HermesInstance"
 
+[[durable_objects.bindings]]
+name = "FLEET"
+class_name = "FleetCoordinator"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["HermesInstance"]
+
+[[migrations]]
+tag = "v2"
+new_classes = ["FleetCoordinator"]
 
 # ─── Cloudflare Sandbox container image (built from container/Dockerfile) ──
 [[containers]]

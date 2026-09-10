@@ -14,6 +14,8 @@ dist/
 .env
 .env.local
 .env.*.local
+*-secrets.env
+.staging-test-secrets.env
 
 # Editor / OS
 .vscode/
@@ -31,3 +33,7 @@ yarn-debug.log*
 # Test artifacts
 coverage/
 .nyc_output/
+
+# Python bytecode from the container plugins
+__pycache__/
+*.pyc

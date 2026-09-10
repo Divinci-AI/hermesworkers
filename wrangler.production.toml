@@ -1,0 +1,303 @@
+# hermesworkers — Cloudflare Workers configuration template.
+#
+# Replace the placeholders below before your first `wrangler deploy`:
+#   - <YOUR_WORKER_NAME>             unique Worker name in your account
+#   - <YOUR_ACCOUNT_ID>              from `wrangler whoami` or the Cloudflare dashboard
+#
+# Optional placeholders for the custom-domain mode (see docs/custom-domain.md):
+#   - <YOUR_DASHBOARD_HOSTNAME>      e.g. hermes.example.com (Worker Route)
+
+name = "divinci-hermes-production"
+main = "src/index.ts"
+compatibility_date = "2026-05-01"
+compatibility_flags = ["nodejs_compat"]
+account_id = "14a6fa23390363382f378b5bd4a0f849"
+
+# Allow the Worker to receive WebSocket upgrades (Hermes dashboard live updates).
+[observability]
+enabled = true
+
+# ─── Virtual terminal: egress allowlist ─────────────────────────────
+# Hosts the terminal user may reach, comma-separated (exact host or
+# dot-anchored suffix: "github.com" also matches "codeload.github.com" but
+# NOT "github.com.attacker.net"). Everything else is REJECTed by iptables.
+#
+# An EMPTY value is a valid deny-all posture, NOT "allow everything" — the
+# guard fails closed by design. Unset falls back to DEFAULT_EGRESS_ALLOWLIST
+# in src/lib/terminal.ts (package registries + forges).
+[vars]
+# ─── Divinci's OWN surfaces, added 2026-08-21 ──────────────────────────────
+#
+# WHY: a proactive wake could not make an HTTP request to any Divinci host,
+# so wake after wake ended "a human can settle this in one command: curl -I
+# <url>". Neither half of the tier fixed it — the terminal's egress excluded
+# these hosts, and web_search/web_extract are not registered in this
+# container at all (web_tools.py gates them on a search provider key that is
+# not set). Verified by asking the running agent for its own tool list.
+#
+# The very first check settled a question the fleet had been circling for
+# days: pub-f4df…r2.dev/drvondawright/logo.svg really is a 404.
+#
+# ⚠️ EXPLICIT HOSTS, NOT `divinci.app`. A dot-anchored `divinci.app` would
+# also admit every future subdomain including internal ones
+# (connector-sync.divinci.app is a secret-gated cron endpoint). These five
+# are the surfaces a Divinci demo actually loads, which is what the fleet
+# needs to verify and the whole of what it needs.
+#
+# ⚠️ `divinci-ai.workers.dev` is a SUFFIX and that is deliberate — it covers
+# every demo-*-landing worker. It is safe because a workers.dev account
+# subdomain can only be deployed to by its owning account.
+#
+# ⚠️ The R2 bucket is an EXACT host, deliberately. A dot-anchored `r2.dev`
+# would admit every public R2 bucket on Cloudflare, including an attacker's.
+#
+# ⚠️ For HTTPS the guard is a CONNECT proxy: it sees host:port, never method
+# or path. Allowing a host allows POST to it as well as GET. Accepted here
+# because these are our own hosts and the terminal holds no credential to
+# authenticate with (uid 10002 cannot read ~/.hermes; verified in prod).
+EGRESS_ALLOWED_HOSTS = "github.com,codeload.github.com,objects.githubusercontent.com,raw.githubusercontent.com,gitlab.com,registry.npmjs.org,pypi.org,files.pythonhosted.org,crates.io,static.crates.io,proxy.golang.org,api.divinci.app,chat.divinci.app,embed.divinci.app,divinci-ai.workers.dev,pub-f4df7b63e90642deba26c7b9fd78ebb0.r2.dev,mcp.buffer.com,mcp.canva.com,sdk.divinci.ai,=divinci.ai,=fulcrum-acme.divinci.ai"
+# Divinci dogfood (divinciai.slack.com Hermes): open Workspace + platform CLI
+# API hosts. Binaries are always in the image; credentials still required.
+# Turn off for a customer-facing prod deploy that must not widen egress.
+HERMES_WORKSPACE_CLI_ENABLED = "true"
+HERMES_PLATFORM_CLI_ENABLED = "true"
+# Terminal MCP + Fulcrum (dogfood). FULCRUM_API_TOKEN is a secret — never a var.
+# ⚠️ Fulcrum token = code execution on the Fulcrum host. Keep prod dogfood-only.
+HERMES_TERMINAL_ENABLED = "true"
+# Approvals: MANUAL in production. Every tool call prompts in Slack.
+#
+# This was "off" (YOLO) from 2026-08-07, for a stated reason that does not apply
+# to this agent: the Slack Allow buttons are flaky on **HTTP Events** mode. The
+# production agent runs SOCKET mode, where they work.
+#
+# What "off" actually meant, once inbound email landed on 2026-08-09: anyone who
+# could send mail to hermes@divinci.app could cause an unattended turn — with
+# HERMES_TERMINAL_ENABLED and a Fulcrum MCP connection that is code execution on
+# the Fulcrum host — and no human in the loop at any point. The email sender
+# allowlist authorises a `From` header, which is free text; DMARC verification
+# now authenticates it (divinci-hermes-email-receiver/src/dmarc.ts), but
+# authentication is not authorisation. An account we trust can still be
+# compromised, and prompt-injected content read by an unattended agent is the
+# textbook case for keeping a human on the tool call.
+#
+# ⛔ CORRECTION 2026-08-14 — approvals are NOT the toolset control for the email
+# path, and this block previously claimed they were. Read at source in
+# NousResearch/hermes-agent v2026.7.7.2 (the tag container/Dockerfile pins):
+#
+#   * `approvals.mode` is consumed by exactly two callers —
+#     `check_all_command_guards` (tools/terminal_tool.py) and
+#     `check_execute_code_guard` (tools/code_execution_tool.py). It is a SHELL
+#     COMMAND gate.
+#   * MCP tool calls dispatch through model_tools.py, whose only gate is
+#     `resolve_pre_tool_block` → plugin `pre_tool_call` hooks.
+#   * `request_tool_approval` — the one generic tool gate — has a single caller:
+#     that plugin path.
+#   * container/start-hermes.sh registers NO plugins, so the hook returns no
+#     directive and MCP calls proceed ungated.
+#   * tools/mcp_tool.py carries approval logic only for ELICITATIONS (an MCP
+#     server questioning the user), never for the tool call itself.
+#   * Reads and writes take the identical path — the code draws no distinction.
+#
+# Observed live: the inbound email of 2026-08-14T05:32Z made a Fulcrum MCP call
+# in a 15s unattended turn with no Allow click. `write_file` / `execute_command`
+# would have passed identically, and those run on the FULCRUM host — outside
+# every container guard (hermes-term uid, egress allowlist) we rely on here.
+#
+# THE CONTROL IS THE TOOL SET, so it is applied there: FULCRUM_MCP_URL now
+# points at /mcp/observer, Fulcrum's hard-whitelisted transport. Verified
+# 2026-08-14 against the live server, not just its docs:
+#   - serverInfo fulcrum-observer 2.12.0; 12 tools vs 127 on /mcp
+#   - execute_command AND read_file both refused at DISPATCH
+#     ("-32602: Tool not found", isError:true) — not merely hidden from
+#     tools/list, which would be a claim about listing, not about blocking
+#   - list_tasks(tags:["gate3"]) returns real tasks with full descriptions
+#   - create_task PERSISTS projectId + dueDate + tags (probe task created,
+#     read back via REST, deleted, confirmed 404) — "accepts" is not "stores"
+#
+# ⚠️ COST, and it is not small: 115 of 127 tools go, including create_project,
+# get_task, list_projects, task dependencies and attachments. This var is
+# worker-level, so interactive Slack and unattended email share it and CANNOT
+# be told apart from config. Accepted deliberately: a human is present for
+# Slack turns and can do the missing steps by hand; nobody is present for mail.
+# The durable fix is a `pre_tool_call` plugin, the only mechanism that can
+# distinguish the two paths — `runHermesTurn` sends just {messages, model}.
+#
+# ⚠️ Do NOT "restore" /mcp here without shipping that plugin first.
+#
+# Approvals stay MANUAL: still the correct gate for Hermes' own shell, which is
+# what it actually governs.
+#
+# Cost, stated plainly: interactive Slack turns now need an Allow click.
+# Staging keeps "off" for frictionless dogfooding, where no inbound email
+# endpoint is wired.
+# The proactive tier's grant was REVOKED for ~3h on 2026-08-21 and is now
+# restored. It was revoked because the tier gives unattended wakes the bounded
+# terminal on the premise that its egress is allowlisted, and that premise was
+# false: setup-terminal.sh had never run on the path the agent uses, so
+# `curl --noproxy "*"` reached the internet from a wake.
+#
+# Restored only after the premise was made true and VERIFIED here, not on
+# staging. net-diag against this container now shows OUTPUT carrying
+# `HERMES_TERM ... owner UID match 10002`, the REJECT rule with matched
+# packets, and the direct-egress self-test failing (exit 7) where it returned
+# HTTP 200 that morning.
+#
+# To revoke again, add back: HERMES_PROACTIVE_TOOLS_DISABLED = "1"
+HERMES_APPROVALS_MODE = "manual"
+# Drop the BUILT-IN toolsets that execute as `hermes`, the uid owning every
+# provider credential in ~/.hermes/.
+#
+# The exposure this closes is `read_file`, not the terminal:
+#
+#     read_file(path="~/.hermes/.env")
+#
+# returned every provider key in ONE call. `approvals.mode = "manual"` above
+# does not gate it — that is a SHELL COMMAND gate with two consumers
+# (check_all_command_guards, check_execute_code_guard) and a tool call is not a
+# shell command. `file_tools.py`'s sensitive-path check does exist, and even
+# refuses to overwrite config.yaml so an injected agent cannot switch approvals
+# off, but both of its call sites are in the WRITE and PATCH handlers. Reads
+# were unchecked.
+#
+# Capability is re-routed, not removed: shell and file work go through the
+# bounded terminal (HERMES_TERMINAL_ENABLED), which runs as uid 10002, is
+# DENIED ~/.hermes/.env and config.yaml, and is egress-allowlisted. Both halves
+# verified in production 2026-08-14.
+#
+# Costs `patch` and `process` (no bounded equivalent) and file access outside
+# /workspace. Verified on staging first — read_file absent rather than merely
+# guard-blocked, bounded terminal intact, agent still completing real tool
+# calls — but staging CANNOT exercise the Slack path (no Slack config is pushed
+# to that agent), so this is the first environment where interactive turns meet
+# it. Revert = delete this line, redeploy, stop + boot-check.
+#
+# ⛔ CORRECTION 2026-08-14, from the Slack smoke test: a denylist naming
+# terminal+file was NOT sufficient. Hermes read ~/.hermes/.env in one turn via
+# `execute_code`, a THIRD toolset this did not name — and hermes-slack also
+# carries browser_exec, browser_cdp, computer_use, cronjob, delegate_task and
+# skill_manage. Naming more toolsets would not fix the SHAPE. The control is
+# now the ALLOWLIST in HERMES_SLACK_TOOLSETS below; this stays as defence in
+# depth, widened to subtract the execution toolsets.
+#
+# What DID hold during that test: approvals.mode=manual prompted before
+# execute_code ran, and Michael had to click Approve. That is a real gate — but
+# it is one click on a truncated snippet, and staging runs approvals=off.
+HERMES_DISABLED_TOOLSETS = "terminal,debugging,file,code_execution,computer_use,cronjob,delegation,browser"
+# The ALLOWLIST is the real control (see start-hermes.sh). The denylist
+# above is defence in depth: if platform_toolsets fails to apply for any
+# reason, the execution toolsets are still subtracted. Today proved that
+# one mechanism silently not applying is the normal case here, not the
+# exception.
+HERMES_SLACK_TOOLSETS = "web,vision,image_gen,bfl,skills,memory,todo,clarify,session_search,kanban,tts"
+HERMES_FULCRUM_MCP_ENABLED = "true"
+FULCRUM_MCP_URL = "https://fulcrum-acme.divinci.ai/mcp/observer"
+# Buffer MCP — changelog idea queue. Token is a wrangler secret:
+#   printf '%s' "$MCP_BUFFER_API_KEY" | wrangler secret put MCP_BUFFER_API_KEY -c wrangler.production.toml
+HERMES_BUFFER_MCP_ENABLED = "true"
+
+# Canva MCP. Divinci dogfood: lets the agent BUILD the outreach deck rather
+# than spec it. Canva has no static key, so the credential is an OAuth seed:
+#   printf '%s' "$MCP_CANVA_OAUTH_JSON" | wrangler secret put MCP_CANVA_OAUTH_JSON -c wrangler.production.toml
+# where the JSON is {"client_id","refresh_token"[,"access_token","expires_at"]}.
+# The grant MUST be its own authorization, not a copy of a laptop's — Canva
+# refresh tokens are single-use, and a container cannot re-consent.
+#
+# OFF until MCP_CANVA_OAUTH_JSON is actually seeded. Flipping this to "true"
+# with no secret costs nothing but registers a server that can never hold a
+# tool, and start-hermes.sh then logs `seed=MISSING` on every boot — a standing
+# false alarm in the one log people grep when Canva goes quiet. Put the secret,
+# then flip this line.
+HERMES_CANVA_MCP_ENABLED = "false"
+# ⚠️ INVARIANT: this MUST stay longer than the Divinci keepalive probe interval
+# (`*/10 * * * *` in server/workspace/workers/connector-sync-worker). A
+# SOCKET-mode Slack agent keeps its Slack connection inside the container, so a
+# sleep is not a pause — the container is REPLACED, loses its Slack config, and
+# the sweep re-pushes it, which restarts the gateway and posts "Gateway shutting
+# down" into the customer's channel.
+#
+# The 5m default (hermesContainer.ts) was chosen for HTTP on-demand agents,
+# where waking per turn is the whole point. With a 10-minute probe it means the
+# container is ALWAYS asleep when probed: every tick churns a container instead
+# of keeping one warm. That is arithmetic, and it is the reason for this
+# setting.
+#
+# ⚠️ It is NOT backed by the Slack-spam cadence originally claimed here
+# ("4:55, 5:07, 5:17, 5:27, 5:37"). A later search found three "Gateway shutting
+# down" messages across five days, not a 10-minute series — those timestamps
+# were inferred from the cron schedule, not read off Slack.
+#
+# 30m restores the pre-2026-08-07 window for this Worker only. Staging stays at
+# the 5m default deliberately — it runs no socket-mode agent, so it gets the
+# cheaper profile.
+HERMES_SLEEP_AFTER = "30m"
+
+# ─── Durable Object that owns the Hermes container ──────────────────
+[[durable_objects.bindings]]
+name = "HERMES"
+class_name = "HermesInstance"
+
+[[durable_objects.bindings]]
+name = "FLEET"
+class_name = "FleetCoordinator"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["HermesInstance"]
+
+[[migrations]]
+tag = "v2"
+new_classes = ["FleetCoordinator"]
+
+# ─── Cloudflare Sandbox container image (built from container/Dockerfile) ──
+[[containers]]
+class_name = "HermesInstance"
+image = "./container/Dockerfile"
+max_instances = 10
+instance_type = "standard-1"
+
+# ─── Rate limiting (optional but recommended) ──────────────────────
+# Native rate-limit bindings. If omitted, the Worker still runs — rate limiting
+# is defense-in-depth, not a hard dependency. `namespace_id` is an arbitrary
+# per-binding integer (string) unique within this Worker.
+[[unsafe.bindings]]
+name = "CHAT_RATE_LIMITER"
+type = "ratelimit"
+namespace_id = "1001"
+simple = { limit = 60, period = 60 }   # 60 chat/proxy requests per minute per IP
+
+[[unsafe.bindings]]
+name = "ADMIN_RATE_LIMITER"
+type = "ratelimit"
+namespace_id = "1002"
+simple = { limit = 10, period = 60 }   # 10 control-plane requests per minute per IP
+
+# ─── Optional: Worker Route for the dashboard subdomain ─────────────
+# Uncomment and edit if you wire a custom domain (see docs/custom-domain.md).
+# routes = [
+#   { pattern = "<YOUR_DASHBOARD_HOSTNAME>/*", custom_domain = true }
+# ]
+
+# ─── Required secrets (set with `wrangler secret put <NAME>`) ──────
+# At least one of the three provider keys is required:
+#   ANTHROPIC_API_KEY    Anthropic Claude access
+#   OPENROUTER_API_KEY   OpenRouter (multi-provider routing)
+#   OPENAI_API_KEY       OpenAI (GPT models)
+#
+#   HERMES_GATEWAY_TOKEN Shared secret between the Worker and the in-container
+#                        Hermes API server. REQUIRED — the container refuses to
+#                        boot an unauthenticated gateway. `openssl rand -hex 32`.
+#   API_TOKEN            Caller bearer token for /v1/* and /api/* (chat level).
+#                        REQUIRED unless ALLOW_UNAUTHENTICATED=true. `openssl rand -hex 32`.
+#
+# Optional:
+#   ADMIN_TOKEN          Separate bearer token gating destructive control routes
+#                        (restart / restart-gateway / stop / logs). If unset,
+#                        those routes fall back to requiring API_TOKEN. Set this
+#                        to keep chat clients from being able to restart/stop the
+#                        instance or read logs. `openssl rand -hex 32`.
+#   ALLOW_UNAUTHENTICATED  Set to "true" ONLY for local/private dev to run an open
+#                        Worker. In its absence, protected routes fail closed (503)
+#                        when no token is configured.
+#   HERMES_DEFAULT_MODEL Override Hermes' default model id, e.g. `anthropic/claude-sonnet-4-5`
+#   DASHBOARD_HOSTNAME   Hostname to proxy to the native dashboard (see docs/custom-domain.md).
+#                        Gated at the chat level with the same fail-closed semantics.

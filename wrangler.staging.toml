@@ -1,0 +1,185 @@
+# hermesworkers — Cloudflare Workers configuration template.
+#
+# Replace the placeholders below before your first `wrangler deploy`:
+#   - <YOUR_WORKER_NAME>             unique Worker name in your account
+#   - <YOUR_ACCOUNT_ID>              from `wrangler whoami` or the Cloudflare dashboard
+#
+# Optional placeholders for the custom-domain mode (see docs/custom-domain.md):
+#   - <YOUR_DASHBOARD_HOSTNAME>      e.g. hermes.example.com (Worker Route)
+
+name = "divinci-hermes-staging"
+main = "src/index.ts"
+compatibility_date = "2026-05-01"
+compatibility_flags = ["nodejs_compat"]
+account_id = "14a6fa23390363382f378b5bd4a0f849"
+
+# Allow the Worker to receive WebSocket upgrades (Hermes dashboard live updates).
+[observability]
+enabled = true
+
+# ─── Virtual terminal: egress allowlist ─────────────────────────────
+# Hosts the terminal user may reach, comma-separated (exact host or
+# dot-anchored suffix: "github.com" also matches "codeload.github.com" but
+# NOT "github.com.attacker.net"). Everything else is REJECTed by iptables.
+#
+# An EMPTY value is a valid deny-all posture, NOT "allow everything" — the
+# guard fails closed by design. Unset falls back to DEFAULT_EGRESS_ALLOWLIST
+# in src/lib/terminal.ts (package registries + forges).
+[vars]
+# ─── Divinci's OWN surfaces, added 2026-08-21 ──────────────────────────────
+#
+# WHY: a proactive wake could not make an HTTP request to any Divinci host,
+# so wake after wake ended "a human can settle this in one command: curl -I
+# <url>". Neither half of the tier fixed it — the terminal's egress excluded
+# these hosts, and web_search/web_extract are not registered in this
+# container at all (web_tools.py gates them on a search provider key that is
+# not set). Verified by asking the running agent for its own tool list.
+#
+# The very first check settled a question the fleet had been circling for
+# days: pub-f4df…r2.dev/drvondawright/logo.svg really is a 404.
+#
+# ⚠️ EXPLICIT HOSTS, NOT `divinci.app`. A dot-anchored `divinci.app` would
+# also admit every future subdomain including internal ones
+# (connector-sync.divinci.app is a secret-gated cron endpoint). These five
+# are the surfaces a Divinci demo actually loads, which is what the fleet
+# needs to verify and the whole of what it needs.
+#
+# ⚠️ `divinci-ai.workers.dev` is a SUFFIX and that is deliberate — it covers
+# every demo-*-landing worker. It is safe because a workers.dev account
+# subdomain can only be deployed to by its owning account.
+#
+# ⚠️ The R2 bucket is an EXACT host, deliberately. A dot-anchored `r2.dev`
+# would admit every public R2 bucket on Cloudflare, including an attacker's.
+#
+# ⚠️ For HTTPS the guard is a CONNECT proxy: it sees host:port, never method
+# or path. Allowing a host allows POST to it as well as GET. Accepted here
+# because these are our own hosts and the terminal holds no credential to
+# authenticate with (uid 10002 cannot read ~/.hermes; verified in prod).
+EGRESS_ALLOWED_HOSTS = "github.com,codeload.github.com,objects.githubusercontent.com,raw.githubusercontent.com,gitlab.com,registry.npmjs.org,pypi.org,files.pythonhosted.org,crates.io,static.crates.io,proxy.golang.org,api.divinci.app,chat.divinci.app,embed.divinci.app,divinci-ai.workers.dev,pub-f4df7b63e90642deba26c7b9fd78ebb0.r2.dev,api.stage.divinci.app,chat.stage.divinci.app,embed.stage.divinci.app,mcp.buffer.com,mcp.canva.com,sdk.divinci.ai,=divinci.ai,=fulcrum-acme.divinci.ai"
+# Opt-in whole-container egress widenings (see src/lib/terminal.ts). Binaries
+# (gws/gcloud/wrangler) are in the image regardless; these flags only open the
+# API hosts. Staging dogfood: both on.
+HERMES_WORKSPACE_CLI_ENABLED = "true"
+HERMES_PLATFORM_CLI_ENABLED = "true"
+# Bounded terminal MCP + Fulcrum remote MCP (Divinci dogfood). Token is a
+# wrangler secret: `echo -n "$TOKEN" | wrangler secret put FULCRUM_API_TOKEN -c wrangler.staging.toml`
+HERMES_TERMINAL_ENABLED = "true"
+# Dogfood: skip Slack approval popups (Allow Once/Session/Always Allow). YOLO.
+# Do NOT copy to customer multi-tenant without re-evaluating credential risk.
+HERMES_APPROVALS_MODE = "off"
+HERMES_FULCRUM_MCP_ENABLED = "true"
+FULCRUM_MCP_URL = "https://fulcrum-acme.divinci.ai/mcp"
+# Buffer MCP — changelog idea queue. Token is a wrangler secret:
+#   printf '%s' "$MCP_BUFFER_API_KEY" | wrangler secret put MCP_BUFFER_API_KEY -c wrangler.staging.toml
+HERMES_BUFFER_MCP_ENABLED = "true"
+
+# Canva MCP. Divinci dogfood: lets the agent BUILD the outreach deck rather
+# than spec it. Canva has no static key, so the credential is an OAuth seed:
+#   printf '%s' "$MCP_CANVA_OAUTH_JSON" | wrangler secret put MCP_CANVA_OAUTH_JSON -c wrangler.staging.toml
+# where the JSON is {"client_id","refresh_token"[,"access_token","expires_at"]}.
+# The grant MUST be its own authorization, not a copy of a laptop's — Canva
+# refresh tokens are single-use, and a container cannot re-consent.
+#
+# OFF until MCP_CANVA_OAUTH_JSON is actually seeded. Flipping this to "true"
+# with no secret costs nothing but registers a server that can never hold a
+# tool, and start-hermes.sh then logs `seed=MISSING` on every boot — a standing
+# false alarm in the one log people grep when Canva goes quiet. Put the secret,
+# then flip this line.
+HERMES_CANVA_MCP_ENABLED = "false"
+# Drop the built-in toolsets that execute as the credential-owning uid.
+#
+# `read_file(path="~/.hermes/.env")` is a ONE-CALL credential read that passes
+# every control: approvals.mode is a shell-command gate (and is "off" here
+# anyway), and file_tools' sensitive-path check is wired only into the write
+# and patch handlers, never reads.
+#
+# Shell and file work still exist — they move to the bounded terminal
+# (HERMES_TERMINAL_ENABLED above), which runs as uid 10002, cannot read
+# ~/.hermes/, and is egress-allowlisted. Both verified in production
+# 2026-08-14.
+#
+# Costs `patch` and `process` (no bounded equivalent) and file access outside
+# /workspace.
+#
+# ⛔ 2026-08-14: this denylist alone was NOT enough. A Slack smoke test read
+# ~/.hermes/.env anyway, via `execute_code` — a toolset it did not name. The
+# real control is now HERMES_SLACK_TOOLSETS below; this list is defence in
+# depth and has been widened to cover the execution toolsets too.
+HERMES_DISABLED_TOOLSETS = "terminal,debugging,file,code_execution,computer_use,cronjob,delegation,browser"
+# The ALLOWLIST is the real control (see start-hermes.sh). The denylist
+# above is defence in depth: if platform_toolsets fails to apply for any
+# reason, the execution toolsets are still subtracted. Today proved that
+# one mechanism silently not applying is the normal case here, not the
+# exception.
+HERMES_SLACK_TOOLSETS = "web,vision,image_gen,bfl,skills,memory,todo,clarify,session_search,kanban,tts"
+
+# ─── Durable Object that owns the Hermes container ──────────────────
+[[durable_objects.bindings]]
+name = "HERMES"
+class_name = "HermesInstance"
+
+[[durable_objects.bindings]]
+name = "FLEET"
+class_name = "FleetCoordinator"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["HermesInstance"]
+
+[[migrations]]
+tag = "v2"
+new_classes = ["FleetCoordinator"]
+
+# ─── Cloudflare Sandbox container image (built from container/Dockerfile) ──
+[[containers]]
+class_name = "HermesInstance"
+image = "./container/Dockerfile"
+max_instances = 10
+instance_type = "standard-1"
+
+# ─── Rate limiting (optional but recommended) ──────────────────────
+# Native rate-limit bindings. If omitted, the Worker still runs — rate limiting
+# is defense-in-depth, not a hard dependency. `namespace_id` is an arbitrary
+# per-binding integer (string) unique within this Worker.
+[[unsafe.bindings]]
+name = "CHAT_RATE_LIMITER"
+type = "ratelimit"
+namespace_id = "1001"
+simple = { limit = 60, period = 60 }   # 60 chat/proxy requests per minute per IP
+
+[[unsafe.bindings]]
+name = "ADMIN_RATE_LIMITER"
+type = "ratelimit"
+namespace_id = "1002"
+simple = { limit = 10, period = 60 }   # 10 control-plane requests per minute per IP
+
+# ─── Optional: Worker Route for the dashboard subdomain ─────────────
+# Uncomment and edit if you wire a custom domain (see docs/custom-domain.md).
+# routes = [
+#   { pattern = "<YOUR_DASHBOARD_HOSTNAME>/*", custom_domain = true }
+# ]
+
+# ─── Required secrets (set with `wrangler secret put <NAME>`) ──────
+# At least one of the three provider keys is required:
+#   ANTHROPIC_API_KEY    Anthropic Claude access
+#   OPENROUTER_API_KEY   OpenRouter (multi-provider routing)
+#   OPENAI_API_KEY       OpenAI (GPT models)
+#
+#   HERMES_GATEWAY_TOKEN Shared secret between the Worker and the in-container
+#                        Hermes API server. REQUIRED — the container refuses to
+#                        boot an unauthenticated gateway. `openssl rand -hex 32`.
+#   API_TOKEN            Caller bearer token for /v1/* and /api/* (chat level).
+#                        REQUIRED unless ALLOW_UNAUTHENTICATED=true. `openssl rand -hex 32`.
+#
+# Optional:
+#   ADMIN_TOKEN          Separate bearer token gating destructive control routes
+#                        (restart / restart-gateway / stop / logs). If unset,
+#                        those routes fall back to requiring API_TOKEN. Set this
+#                        to keep chat clients from being able to restart/stop the
+#                        instance or read logs. `openssl rand -hex 32`.
+#   ALLOW_UNAUTHENTICATED  Set to "true" ONLY for local/private dev to run an open
+#                        Worker. In its absence, protected routes fail closed (503)
+#                        when no token is configured.
+#   HERMES_DEFAULT_MODEL Override Hermes' default model id, e.g. `anthropic/claude-sonnet-4-5`
+#   DASHBOARD_HOSTNAME   Hostname to proxy to the native dashboard (see docs/custom-domain.md).
+#                        Gated at the chat level with the same fail-closed semantics.

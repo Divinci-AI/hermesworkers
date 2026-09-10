@@ -1,0 +1,57 @@
+# Minimal image for validating the virtual-terminal security boundary.
+#
+# Deliberately NOT the full Hermes image: this installs only what
+# setup-terminal.sh actually touches (the two users, iptables, gosu, node for
+# the egress guard, curl for the self-test), so the boundary can be exercised in
+# ~1 minute instead of the ~15 the full Python+Hermes build takes.
+#
+# Built on the SAME cloudflare/sandbox base as production so the kernel surface,
+# default capabilities and userspace match what Cloudflare actually runs.
+#
+# Usage:
+#   docker build -f container/Dockerfile.boundary-test -t hw-boundary-test container/
+#   docker run --rm --cap-add=NET_ADMIN hw-boundary-test   # expect: boundary established
+#   docker run --rm hw-boundary-test                       # expect: FAIL CLOSED
+FROM docker.io/cloudflare/sandbox:0.12.4
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        iptables gosu sudo curl ca-certificates nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+# Mirror the production users exactly — the uids are what the iptables
+# owner-match rules and the workspace ownership key off.
+RUN groupadd --system --gid 10001 hermes 2>/dev/null || true \
+    && useradd --system --uid 10001 --gid hermes --home-dir /home/hermes --shell /usr/sbin/nologin hermes 2>/dev/null || true \
+    && groupadd --system --gid 10002 hermes-term 2>/dev/null || true \
+    && useradd --system --uid 10002 --gid hermes-term --home-dir /workspace --shell /bin/bash hermes-term 2>/dev/null || true \
+    && mkdir -p /home/hermes/.hermes /workspace \
+    && chown -R hermes:hermes /home/hermes \
+    && chown hermes-term:hermes-term /workspace
+
+# A stand-in for the real credential file, so the isolation assertion is
+# meaningful: the terminal user must not be able to read this.
+RUN printf 'GEMINI_API_KEY=FAKE-SENTINEL-VALUE\n' > /home/hermes/.hermes/.env \
+    && chmod 600 /home/hermes/.hermes/.env \
+    && chmod 700 /home/hermes/.hermes \
+    && chown -R hermes:hermes /home/hermes/.hermes
+
+RUN mkdir -p /var/log && touch /var/log/hermes-egress.log \
+    && chown hermes:hermes /var/log/hermes-egress.log \
+    && chmod 0640 /var/log/hermes-egress.log
+
+COPY hermes-term-exec /usr/local/bin/hermes-term-exec
+COPY mcp-terminal-server.js /usr/local/bin/mcp-terminal-server.js
+COPY mcp-probe.js /usr/local/bin/mcp-probe.js
+RUN chmod 0755 /usr/local/bin/hermes-term-exec /usr/local/bin/mcp-terminal-server.js /usr/local/bin/mcp-probe.js \
+    && chown root:root /usr/local/bin/hermes-term-exec /usr/local/bin/mcp-terminal-server.js \
+    && printf 'hermes ALL=(hermes-term) NOPASSWD: /usr/local/bin/hermes-term-exec\n' > /etc/sudoers.d/hermes-term \
+    && chmod 0440 /etc/sudoers.d/hermes-term \
+    && visudo -cf /etc/sudoers.d/hermes-term
+
+COPY egress-guard.js /usr/local/bin/egress-guard.js
+COPY setup-terminal.sh /usr/local/bin/setup-terminal.sh
+COPY boundary-test.sh /usr/local/bin/boundary-test.sh
+RUN chmod 0755 /usr/local/bin/setup-terminal.sh /usr/local/bin/egress-guard.js /usr/local/bin/boundary-test.sh
+
+ENV EGRESS_ALLOWED_HOSTS=github.com,registry.npmjs.org
+ENTRYPOINT ["/usr/local/bin/boundary-test.sh"]

@@ -1,0 +1,175 @@
+#!/usr/bin/env bash
+# One-shot: deploy the STUB image to staging, run the isolation smoke test, tear
+# down. Proves per-agent container isolation without a real Hermes image.
+#
+# Requires: Docker running; a Cloudflare account with Containers enabled; a token
+# with Workers Scripts:Edit + Containers scope. By default reads the token +
+# account from the Divinci staging creds file; override with CF_TOKEN / CF_ACCT.
+#
+# Usage:
+#   ./scripts/deploy-staging-stub.sh deploy     # config + deploy + set secrets
+#   ./scripts/deploy-staging-stub.sh smoke       # run isolation-smoke.sh
+#   ./scripts/deploy-staging-stub.sh teardown    # delete the worker + container
+#   ./scripts/deploy-staging-stub.sh all         # deploy → smoke → teardown
+#
+# Secrets are generated locally and written to .staging-test-secrets.env
+# (gitignored) — never printed to stdout.
+
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+WORKER_NAME="${WORKER_NAME:-hermesworkers-staging}"
+CREDS="${CREDS:-/Users/mikeumus/Documents/server/private-keys/staging/cloudflare.env}"
+WRANGLER="${WRANGLER:-npx --yes wrangler@4}"   # Containers need a recent wrangler
+SECRETS_FILE=".staging-test-secrets.env"
+
+load_creds() {
+  CF_TOKEN="${CF_TOKEN:-$(sed -nE 's/\r$//; s/^CLOUDFLARE_API_TOKEN=["'\'']?([^"'\'']*)["'\'']?$/\1/p' "$CREDS" 2>/dev/null | head -1)}"
+  CF_ACCT="${CF_ACCT:-$(sed -nE 's/\r$//; s/^CLOUDFLARE_ACCOUNT_ID=["'\'']?([^"'\'']*)["'\'']?$/\1/p' "$CREDS" 2>/dev/null | head -1)}"
+  [ -n "$CF_ACCT" ] && export CLOUDFLARE_ACCOUNT_ID="$CF_ACCT"
+  # Use the file token ONLY if it actually authenticates; otherwise fall back to
+  # a `wrangler login` OAuth session (the staging file token is known to expire).
+  if [ -n "$CF_TOKEN" ] && curl -sf "https://api.cloudflare.com/client/v4/accounts/${CF_ACCT}" \
+        -H "Authorization: Bearer $CF_TOKEN" >/dev/null 2>&1; then
+    export CLOUDFLARE_API_TOKEN="$CF_TOKEN"
+  else
+    echo "note: no valid file token — relying on 'wrangler login' OAuth session." >&2
+    unset CLOUDFLARE_API_TOKEN || true
+    if ! $WRANGLER whoami >/dev/null 2>&1; then
+      echo "ERROR: not authenticated. Run 'npx wrangler login' (or set CF_TOKEN=<scoped token>) and retry." >&2
+      exit 1
+    fi
+  fi
+}
+
+write_config() {
+  cat > wrangler.staging.toml <<TOML
+name = "${WORKER_NAME}"
+main = "src/index.ts"
+compatibility_date = "2026-05-01"
+compatibility_flags = ["nodejs_compat"]
+account_id = "${CF_ACCT}"
+
+[[durable_objects.bindings]]
+name = "HERMES"
+class_name = "HermesInstance"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["HermesInstance"]
+
+[[containers]]
+class_name = "HermesInstance"
+image = "${IMAGE_DOCKERFILE:-./container/Dockerfile.stub}"
+max_instances = 10
+instance_type = "standard-1"
+TOML
+  echo "wrote wrangler.staging.toml (worker=${WORKER_NAME})"
+}
+
+do_deploy() {
+  load_creds; write_config
+  npm ci
+  npm run typecheck && npm test
+  # Stream deploy output (tee) so failures are VISIBLE — do not swallow into a
+  # var (that hid a keychain error under set -e). Extract the URL from the tee'd file.
+  local deploy_out="/tmp/hw-deploy-$$.out"
+  if ! $WRANGLER deploy -c wrangler.staging.toml 2>&1 | tee "$deploy_out"; then
+    echo "deploy step FAILED (see output above)"; return 1
+  fi
+  local url
+  url="$(grep -oiE 'https://[a-z0-9.-]+\.workers\.dev' "$deploy_out" | head -1)"; rm -f "$deploy_out"
+  if [ ! -f "$SECRETS_FILE" ]; then
+    { echo "HERMES_GATEWAY_TOKEN=$(openssl rand -hex 32)";
+      echo "SERVICE_AUTH_SECRET=$(openssl rand -hex 32)"; } > "$SECRETS_FILE"
+  fi
+  # Persist the resolved URL for the smoke step.
+  grep -q '^WORKER_URL=' "$SECRETS_FILE" 2>/dev/null || echo "WORKER_URL=${url}" >> "$SECRETS_FILE"
+  # shellcheck disable=SC1090
+  . "$SECRETS_FILE"
+  printf '%s' "$HERMES_GATEWAY_TOKEN" | $WRANGLER secret put HERMES_GATEWAY_TOKEN -c wrangler.staging.toml
+  printf '%s' "$SERVICE_AUTH_SECRET"  | $WRANGLER secret put SERVICE_AUTH_SECRET  -c wrangler.staging.toml
+  # Functional runs need a provider key so Hermes can actually answer.
+  # NOTE: only ship keys you have VALIDATED. Hermes makes auxiliary LLM calls
+  # (memory/title/routing) and fails EVERY turn with "HTTP 401: Missing
+  # Authentication header" if ANY configured provider key is dead — even when the
+  # main model is a different, working provider. This cost a long debugging session
+  # (a stale OPENAI_API_KEY broke every Gemini turn). We deliberately do NOT wire an
+  # OPENAI_API_KEY branch here: all our OpenAI keys are dead and would poison the
+  # container. If you ever add a provider, confirm the key authenticates first.
+  if [ -n "${PROVIDER_KEY_ANTHROPIC:-}" ]; then
+    printf '%s' "$PROVIDER_KEY_ANTHROPIC" | $WRANGLER secret put ANTHROPIC_API_KEY -c wrangler.staging.toml
+  fi
+  if [ -n "${PROVIDER_KEY_GEMINI:-}" ]; then
+    printf '%s' "$PROVIDER_KEY_GEMINI" | $WRANGLER secret put GEMINI_API_KEY -c wrangler.staging.toml
+  fi
+  if [ -n "${PROVIDER_KEY_NOUS:-}" ]; then
+    printf '%s' "$PROVIDER_KEY_NOUS" | $WRANGLER secret put NOUS_API_KEY -c wrangler.staging.toml
+  fi
+  if [ -n "${HERMES_MODEL:-}" ]; then
+    printf '%s' "$HERMES_MODEL" | $WRANGLER secret put HERMES_DEFAULT_MODEL -c wrangler.staging.toml
+  fi
+  # Secrets propagate to the edge a few seconds after `secret put`; the smoke can
+  # otherwise race and see hosted_mode_not_configured. Poll the hosted gate with a
+  # valid bearer but NO agent id: 503 = secret not live yet, 400 = live (missing
+  # agent id). This rejects in the auth middleware, so it never spins a container.
+  if [ -n "$url" ]; then
+    echo "Waiting for SERVICE_AUTH_SECRET to propagate..."
+    local i code
+    for i in $(seq 1 24); do
+      code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$url/hosted/agent/probe" \
+        -H "Authorization: Bearer $SERVICE_AUTH_SECRET" 2>/dev/null || echo 000)
+      if [ "$code" = "400" ]; then echo "  secret live (${i}x)"; break; fi
+      sleep 5
+    done
+  fi
+  echo "Deployed at: ${url:-<url-not-parsed>}. Secrets in $SECRETS_FILE."
+}
+
+do_smoke() {
+  load_creds
+  # shellcheck disable=SC1090
+  . "$SECRETS_FILE"
+  local url="${WORKER_URL:-}"
+  if [ -z "$url" ]; then
+    local sub
+    sub="$($WRANGLER whoami 2>/dev/null | grep -oiE '[a-z0-9-]+\.workers\.dev' | head -1)"
+    url="https://${WORKER_NAME}.${sub}"
+  fi
+  echo "Smoke against $url"
+  WORKER_URL="$url" SERVICE_AUTH_SECRET="$SERVICE_AUTH_SECRET" "${SMOKE_SCRIPT:-./scripts/isolation-smoke.sh}"
+}
+
+do_teardown() {
+  load_creds
+  $WRANGLER delete -c wrangler.staging.toml --force || \
+    echo "Manual teardown: $WRANGLER delete --name ${WORKER_NAME} --force"
+  # `wrangler delete` removes the Worker but NOT the associated Containers
+  # application — it lingers (billable, and blocks a same-name redeploy). Remove
+  # it explicitly. `containers list/delete` are account-level, so run them from a
+  # config-free dir to avoid the placeholder wrangler.toml tripping validation.
+  local cid
+  cid=$( (cd /tmp && $WRANGLER containers list 2>/dev/null) \
+    | grep "${WORKER_NAME}-hermesinstance" | grep -oE '[0-9a-f-]{36}' | head -1)
+  if [ -n "$cid" ]; then
+    ( cd /tmp && yes | $WRANGLER containers delete "$cid" >/dev/null 2>&1 ) \
+      && echo "Deleted container application $cid" \
+      || echo "Container app cleanup needs manual step: wrangler containers delete $cid"
+  fi
+  rm -f wrangler.staging.toml
+  echo "Torn down. Keep $SECRETS_FILE only if re-deploying."
+}
+
+case "${1:-all}" in
+  deploy)   do_deploy ;;
+  smoke)    do_smoke ;;
+  teardown) do_teardown ;;
+  all)
+    set +e
+    do_deploy; drc=$?
+    if [ "$drc" -eq 0 ]; then do_smoke; rc=$?; else rc="$drc"; fi
+    do_teardown              # always tear down, even if deploy/smoke failed
+    exit "$rc"
+    ;;
+  *) echo "usage: $0 {deploy|smoke|teardown|all}"; exit 1 ;;
+esac

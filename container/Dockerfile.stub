@@ -1,0 +1,19 @@
+# Stub container for the isolation proof ONLY.
+#
+# The isolation probe (/hosted/agent/probe) exercises the Sandbox container's
+# `exec` (write + read a per-container marker); it does NOT need Hermes. This
+# minimal image sidesteps the placeholder HERMES_VERSION so we can prove
+# per-agent container isolation before a real Hermes image exists.
+#
+# Do NOT use this for functional/chat testing — it has no Hermes gateway.
+FROM docker.io/cloudflare/sandbox:0.7.20
+LABEL org.opencontainers.image.title="hermesworkers-stub"
+LABEL org.opencontainers.image.description="Isolation-proof stub (no Hermes)"
+
+# A trivial long-lived process so startProcess() has a target if invoked.
+# The probe itself only uses exec, which the Sandbox base supports directly.
+RUN printf '#!/bin/sh\nexec sleep infinity\n' > /usr/local/bin/start-hermes.sh \
+    && chmod 0755 /usr/local/bin/start-hermes.sh
+
+EXPOSE 18789
+EXPOSE 9119
